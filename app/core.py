@@ -136,6 +136,22 @@ def validate_xray_shape(config: dict[str, Any]) -> None:
     effective_xray_config(config)
 
 
+def xray_uses_default_password(config: dict[str, Any]) -> bool:
+    """Detect the shipped placeholder password within Xray inbound settings."""
+    def contains_placeholder(value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key).lower() in {"pass", "password"} and item == "change-me":
+                    return True
+                if contains_placeholder(item):
+                    return True
+        elif isinstance(value, list):
+            return any(contains_placeholder(item) for item in value)
+        return False
+
+    return contains_placeholder(config.get("inbounds", []))
+
+
 def validate_server(server: str) -> str:
     server = server.strip()
     if not server:
@@ -1306,6 +1322,12 @@ class ProcessManager:
                 connected_at = VPN_CONNECTED.stat().st_mtime
             except OSError:
                 pass
+        try:
+            default_proxy_password: bool | None = xray_uses_default_password(
+                read_json(XRAY_CONFIG)
+            )
+        except ConfigError:
+            default_proxy_password = None
         return {
             "services": services,
             "vpn_connected": bool(vpn_ip and services["vpn"]["running"]),
@@ -1316,6 +1338,9 @@ class ProcessManager:
             "mark": XRAY_MARK,
             "certificate_candidate": self.certificate_candidate(),
             "keepalive": keepalive,
+            "security": {
+                "default_proxy_password": default_proxy_password,
+            },
             "statistics": {
                 "vpn_session": {
                     "connected_at": connected_at,

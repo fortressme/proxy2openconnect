@@ -78,6 +78,8 @@
           <article class="metric-card"><div class="metric-head"><span>Egress Policy</span><span class="badge success">三模式</span></div><strong>VPN Route Policy</strong><p>全部接管 / VPN 下发 / 手动网段</p><div class="mini-rule"><code>route mode</code><span>→</span><code>tun0</code></div></article>
         </div>
 
+        <div id="overview-security-notice" class="notice overview-security-notice hidden" role="alert"><span>i</span><p><strong>检测到 Xray 仍在使用默认密码。</strong>请在 Xray 配置中修改 <code>change-me</code>，并限制宿主机端口的可访问来源。</p></div>
+
         <section class="telemetry-section" aria-labelledby="telemetry-title">
           <div class="telemetry-heading">
             <div><p class="eyebrow">LIVE TELEMETRY</p><h2 id="telemetry-title">运行统计</h2></div>
@@ -126,8 +128,6 @@
             <div><span>下次重试</span><strong id="fact-next-retry">未安排</strong></div>
           </div>
         </section>
-
-        <div class="notice"><span>i</span><p><strong>当前默认配置已开启代理认证。</strong>首次使用前请在 Xray 配置中修改 <code>change-me</code> 密码，并限制宿主机端口的可访问来源。</p></div>
 
         <section class="history-panel panel" aria-labelledby="history-title">
           <div class="history-heading">

@@ -329,6 +329,8 @@ async function refreshStatus() {
     const connected = status.vpn_connected;
     const vpnRouteCount = (status.vpn_routes || []).filter(route => route.includes(" include ")).length;
     const activeDns = status.active_dns || [];
+    const usesDefaultProxyPassword = status.security?.default_proxy_password === true;
+    $("#overview-security-notice").classList.toggle("hidden", !usesDefaultProxyPassword);
     setDot("#top-vpn-dot", connected, vpnProcess);
     setDot("#vpn-page-dot", connected, vpnProcess);
     $("#top-vpn-text").textContent = connected ? "VPN 已连接" : vpnProcess ? "VPN 连接中" : reconnectPending ? "VPN 等待重连" : "VPN 未连接";

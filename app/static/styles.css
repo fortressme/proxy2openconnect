@@ -133,6 +133,7 @@ nav { display: grid; gap: 7px; }
 .history-cell { color:#82909a; font-size:9px; }
 .history-count { color:#d4ded7; font-size:11px; font-weight:750; text-align:right; }
 .history-empty { display:grid; min-height:120px; place-items:center; border:1px dashed #29333d; border-radius:10px; color:#65727d; font-size:10px; }
+.overview-security-notice { margin-top:12px; }
 .history-panel .panel-footnote code { color:#7d8b95; }
 .notice { display:flex; gap:13px; align-items:flex-start; border:1px solid rgba(244,189,98,.2); background:rgba(244,189,98,.045); border-radius:14px; padding:15px 18px; margin-top:16px; color:#aeb7bf; font-size:12px; line-height:1.6; }.notice > span { width:21px; height:21px; display:grid; place-content:center; flex:0 0 auto; border:1px solid rgba(244,189,98,.4); color:var(--amber); border-radius:50%; font-weight:700; }.notice p { margin:0; }.notice strong { color:#e7eaec; }.notice code,.section-intro code { color:var(--green); }
 .section-intro { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; margin: 18px 0 28px; }.section-intro h1 { font-size:36px; letter-spacing:-.045em; margin:10px 0 8px; }.section-intro > div > p:last-child { color:var(--muted); font-size:13px; margin:0; max-width:650px; line-height:1.6; }
