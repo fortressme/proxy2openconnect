@@ -27,6 +27,7 @@ VPN_CONFIG = DATA_DIR / "vpn" / "config.json"
 RUNTIME_CONFIG = Path("/run/proxy2openconnect/xray-effective.json")
 VPN_CONNECTED = Path("/run/proxy2openconnect/vpn.connected")
 VPN_ROUTES = Path("/run/proxy2openconnect/split-routes")
+DNS_ACTIVE = Path("/run/proxy2openconnect/dns-active")
 XRAY_MARK = int(os.getenv("XRAY_VPN_MARK", "255"))
 ROUTE_TABLE = int(os.getenv("XRAY_VPN_ROUTE_TABLE", "200"))
 VPN_OUTBOUND_TAGS = frozenset(
@@ -38,6 +39,7 @@ XRAY_BINARY = os.getenv("XRAY_BINARY", "/usr/local/bin/xray")
 OPENCONNECT_BINARY = os.getenv("OPENCONNECT_BINARY", "/usr/sbin/openconnect")
 VPN_SCRIPT = "/opt/proxy2openconnect/scripts/vpn-script.sh"
 VPN_ROUTE_MODES = frozenset({"all", "vpn", "manual"})
+VPN_DNS_MODES = frozenset({"system", "vpn", "manual"})
 MAX_MANUAL_ROUTES = 4096
 MAX_AUTO_RECONNECT_ATTEMPTS = 5
 
@@ -165,6 +167,33 @@ def validate_keepalive_url(value: str) -> str:
     return candidate
 
 
+def resolve_vpn_gateway(server: str, disable_ipv6: bool = True) -> tuple[str, str] | None:
+    """Resolve a gateway before tunnel DNS is enabled so OpenConnect can pin the result."""
+    parsed = urlparse(validate_server(server))
+    host = parsed.hostname
+    assert host is not None
+    try:
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+
+    family = socket.AF_INET if disable_ipv6 else socket.AF_UNSPEC
+    try:
+        addresses = socket.getaddrinfo(
+            host,
+            parsed.port or 443,
+            family=family,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError as exc:
+        raise ConfigError(f"无法使用连接前的系统 DNS 解析 VPN 网关 {host}: {exc}") from exc
+    for _, _, _, _, sockaddr in addresses:
+        if sockaddr and sockaddr[0]:
+            return host, str(sockaddr[0])
+    raise ConfigError(f"连接前的系统 DNS 没有返回 VPN 网关 {host} 的地址")
+
+
 def _normalize_network_list(value: Any, label: str) -> list[str]:
     if value is None:
         items: list[Any] = []
@@ -195,6 +224,33 @@ def _normalize_network_list(value: Any, label: str) -> list[str]:
     return networks
 
 
+def _normalize_dns_servers(value: Any) -> list[str]:
+    if value is None:
+        items: list[Any] = []
+    elif isinstance(value, str):
+        items = value.replace(",", "\n").splitlines()
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise ConfigError("DNS 服务器必须是 IP 地址数组")
+    servers: list[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, str):
+            raise ConfigError(f"DNS 服务器[{index}] 必须是 IP 地址")
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            address = ipaddress.ip_address(candidate).compressed
+        except ValueError as exc:
+            raise ConfigError(f"DNS 服务器[{index}] 不是有效 IP 地址: {candidate}") from exc
+        if address not in servers:
+            servers.append(address)
+        if len(servers) > 3:
+            raise ConfigError("最多允许配置 3 个 DNS 服务器")
+    return servers
+
+
 def normalize_vpn_route_config(config: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(config)
     mode = str(result.get("route_mode", "all")).strip().lower()
@@ -207,6 +263,14 @@ def normalize_vpn_route_config(config: dict[str, Any]) -> dict[str, Any]:
     )
     if mode == "manual" and not result["manual_routes"]:
         raise ConfigError("手动路由模式至少需要一个包含网段")
+
+    dns_mode = str(result.get("dns_mode", "system")).strip().lower()
+    if dns_mode not in VPN_DNS_MODES:
+        raise ConfigError("全局 DNS 模式必须是 system、vpn 或 manual")
+    result["dns_mode"] = dns_mode
+    result["dns_servers"] = _normalize_dns_servers(result.get("dns_servers"))
+    if dns_mode == "manual" and not result["dns_servers"]:
+        raise ConfigError("手动 DNS 模式至少需要一个 DNS 服务器 IP")
 
     result["auto_reconnect"] = bool(result.get("auto_reconnect", True))
     try:
@@ -305,6 +369,8 @@ def vpn_route_environment(config: dict[str, Any]) -> dict[str, str]:
         "XRAY_VPN_ROUTE_MODE": normalized["route_mode"],
         "XRAY_VPN_MANUAL_ROUTES": "\n".join(normalized["manual_routes"]),
         "XRAY_VPN_MANUAL_EXCLUDE_ROUTES": "\n".join(normalized["manual_exclude_routes"]),
+        "XRAY_VPN_DNS_MODE": normalized["dns_mode"],
+        "XRAY_VPN_DNS_SERVERS": "\n".join(normalized["dns_servers"]),
     }
 
 
@@ -505,7 +571,16 @@ class ProcessManager:
             self._keepalive_wakeup.set()
 
     def _start_vpn_attempt(self, config: dict[str, Any], secret: str, otp: str = "") -> None:
+        # Restore the pre-tunnel resolver before looking up the public VPN gateway.
+        self.ensure_direct_fallback()
         command = build_openconnect_command(config)
+        gateway = resolve_vpn_gateway(
+            command[-1], disable_ipv6=bool(config.get("disable_ipv6", True))
+        )
+        if gateway:
+            host, address = gateway
+            command.insert(-1, f"--resolve={host}:{address}")
+            self._append(self.services["vpn"], f"VPN 网关已通过连接前 DNS 解析并固定为 {address}")
         stdin_text = secret + (f"\n{otp}" if otp else "")
         process_env = os.environ.copy()
         process_env.update(vpn_route_environment(config))
@@ -734,11 +809,19 @@ class ProcessManager:
                 for line in VPN_ROUTES.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
+        active_dns: list[str] = []
+        if DNS_ACTIVE.exists():
+            active_dns = [
+                line.strip()
+                for line in DNS_ACTIVE.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
         return {
             "services": services,
             "vpn_connected": bool(vpn_ip and services["vpn"]["running"]),
             "vpn_ip": vpn_ip,
             "vpn_routes": vpn_routes,
+            "active_dns": active_dns,
             "route_table": ROUTE_TABLE,
             "mark": XRAY_MARK,
             "certificate_candidate": self.certificate_candidate(),

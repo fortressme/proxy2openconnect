@@ -4,8 +4,10 @@ set -eu
 TABLE="${XRAY_VPN_ROUTE_TABLE:-200}"
 MARK="${XRAY_VPN_MARK:-255}"
 PRIORITY="${XRAY_VPN_RULE_PRIORITY:-100}"
+DNS_PRIORITY="${XRAY_VPN_DNS_RULE_PRIORITY:-99}"
 STATE_DIR=/run/proxy2openconnect
 ROUTES_FILE="$STATE_DIR/split-routes"
+DNS_ROUTES_FILE="$STATE_DIR/dns-routes"
 mkdir -p "$STATE_DIR"
 
 ensure_ipv4_rule() {
@@ -25,16 +27,58 @@ remove_policy_rules() {
   while ip -6 rule del priority "$PRIORITY" fwmark "$MARK" table "$TABLE" 2>/dev/null; do :; done
 }
 
+remove_dns_rules() {
+  [ -f "$DNS_ROUTES_FILE" ] || return 0
+  while IFS=' ' read -r family network; do
+    [ -n "$network" ] || continue
+    case "$family" in
+      4) while ip -4 rule del priority "$DNS_PRIORITY" to "$network" table "$TABLE" 2>/dev/null; do :; done ;;
+      6) while ip -6 rule del priority "$DNS_PRIORITY" to "$network" table "$TABLE" 2>/dev/null; do :; done ;;
+    esac
+  done < "$DNS_ROUTES_FILE"
+}
+
 flush_policy_routes() {
   ip route flush table "$TABLE" 2>/dev/null || true
   ip -6 route flush table "$TABLE" 2>/dev/null || true
 }
 
 enable_direct_fallback() {
+  remove_dns_rules
+  python3 /opt/proxy2openconnect/app/dns.py restore || true
   remove_policy_rules
   flush_policy_routes
   rm -f "$ROUTES_FILE"
   rm -f "$STATE_DIR/vpn.connected"
+}
+
+install_dns_routes() {
+  [ -f "$DNS_ROUTES_FILE" ] || return 0
+  while IFS=' ' read -r family network; do
+    [ -n "$network" ] || continue
+    case "$family" in
+      4)
+        ip -4 route replace "$network" dev "$TUNDEV" table "$TABLE"
+        ip -4 rule add priority "$DNS_PRIORITY" to "$network" lookup "$TABLE"
+        ;;
+      6)
+        ip -6 route replace "$network" dev "$TUNDEV" table "$TABLE"
+        ip -6 rule add priority "$DNS_PRIORITY" to "$network" lookup "$TABLE"
+        ;;
+    esac
+  done < "$DNS_ROUTES_FILE"
+}
+
+configure_global_dns() {
+  if python3 /opt/proxy2openconnect/app/dns.py apply; then
+    if ! install_dns_routes; then
+      echo "全局 DNS 专用路由安装失败，已恢复容器默认 DNS" >&2
+      remove_dns_rules
+      python3 /opt/proxy2openconnect/app/dns.py restore || true
+    fi
+  else
+    python3 /opt/proxy2openconnect/app/dns.py restore || true
+  fi
 }
 
 install_split_routes() {
@@ -81,9 +125,11 @@ enable_vpn_egress() {
   fi
   ip link set dev "$TUNDEV" up
 
+  remove_dns_rules
   remove_policy_rules
   flush_policy_routes
   install_split_routes
+  configure_global_dns
   printf '%s\n' "${INTERNAL_IP4_ADDRESS:-connected}" > "$STATE_DIR/vpn.connected"
 }
 

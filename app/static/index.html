@@ -99,6 +99,23 @@
                   <label data-keepalive-field>保活间隔（秒）<input name="keepalive_interval" type="number" min="10" max="86400" value="300"></label>
                 </div>
               </div>
+              <div class="reliability-card dns-card wide">
+                <div class="reliability-heading"><div><strong>全局 DNS</strong><small>控制容器系统解析器，包括网址保活和其他非 Xray 进程。VPN 网关始终先用连接前的系统 DNS 解析并固定 IP；请确保该 DNS 能解析公网网关。</small></div><span class="badge">连接时生效</span></div>
+                <div class="reliability-grid">
+                  <label class="wide">DNS 来源
+                    <select name="dns_mode">
+                      <option value="system">保持容器默认 DNS</option>
+                      <option value="vpn">使用 VPN 网关下发的 DNS（推荐用于内网）</option>
+                      <option value="manual">手动指定 DNS 服务器</option>
+                    </select>
+                  </label>
+                  <label class="wide hidden" data-manual-dns>DNS 服务器 IP
+                    <textarea name="dns_servers" rows="3" placeholder="每行一个 IP，最多 3 个，例如：&#10;10.0.0.53&#10;10.0.0.54"></textarea>
+                    <small class="field-hint">连接后会写入容器的系统解析器，并为这些地址建立直达 tun0 的专用路由；断开时自动恢复。</small>
+                  </label>
+                  <div class="dns-runtime wide"><span>当前生效</span><code id="active-dns">容器默认 DNS</code></div>
+                </div>
+              </div>
               <label class="wide">路由模式
                 <select name="route_mode">
                   <option value="all">接管全部（默认）</option>

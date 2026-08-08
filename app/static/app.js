@@ -64,6 +64,7 @@ async function refreshStatus() {
     const reconnectPending = Boolean(status.services.vpn.reconnect_pending);
     const connected = status.vpn_connected;
     const vpnRouteCount = (status.vpn_routes || []).filter(route => route.includes(" include ")).length;
+    const activeDns = status.active_dns || [];
     setDot("#top-vpn-dot", connected, vpnProcess);
     setDot("#vpn-page-dot", connected, vpnProcess);
     $("#top-vpn-text").textContent = connected ? "VPN 已连接" : vpnProcess ? "VPN 连接中" : reconnectPending ? "VPN 等待重连" : "VPN 未连接";
@@ -79,6 +80,7 @@ async function refreshStatus() {
     $("#overview-xray-action").textContent = xray ? "停止 Xray" : "启动 Xray";
     $("#vpn-connect").disabled = vpnProcess;
     $("#vpn-disconnect").disabled = !vpnProcess && !reconnectPending;
+    $("#active-dns").textContent = activeDns.length ? activeDns.join(" · ") : "容器默认 DNS";
     const candidate = status.certificate_candidate;
     $("#certificate-trust-card").classList.toggle("hidden", !candidate);
     if (candidate) {
@@ -101,9 +103,12 @@ async function loadVpnConfig() {
   form.elements.route_mode.value = config.route_mode || "all";
   form.elements.manual_routes.value = (config.manual_routes || []).join("\n");
   form.elements.manual_exclude_routes.value = (config.manual_exclude_routes || []).join("\n");
+  form.elements.dns_mode.value = config.dns_mode || "system";
+  form.elements.dns_servers.value = (config.dns_servers || []).join("\n");
   form.elements.extra_args.value = (config.extra_args || []).join("\n");
   updateRouteModeFields();
   updateKeepaliveFields();
+  updateDnsModeFields();
   $("#saved-password-badge").textContent = result.has_password ? "已有保存密码" : "无已存密码";
   $("#saved-password-badge").classList.toggle("success", result.has_password);
 }
@@ -142,6 +147,8 @@ function formToVpnConfig() {
     route_mode: form.elements.route_mode.value,
     manual_routes: form.elements.manual_routes.value.split("\n").map(v => v.trim()).filter(Boolean),
     manual_exclude_routes: form.elements.manual_exclude_routes.value.split("\n").map(v => v.trim()).filter(Boolean),
+    dns_mode: form.elements.dns_mode.value,
+    dns_servers: form.elements.dns_servers.value.replaceAll(",", "\n").split("\n").map(v => v.trim()).filter(Boolean),
     reconnect_timeout: Number(form.elements.reconnect_timeout.value || 300),
     auto_reconnect: form.elements.auto_reconnect.checked,
     auto_reconnect_interval: Number(form.elements.auto_reconnect_interval.value || 10),
@@ -165,6 +172,11 @@ function updateKeepaliveFields() {
     const control = field.querySelector("input");
     if (control) control.disabled = !enabled;
   });
+}
+
+function updateDnsModeFields() {
+  const manual = $("#vpn-form").elements.dns_mode.value === "manual";
+  $$(`[data-manual-dns]`).forEach(field => field.classList.toggle("hidden", !manual));
 }
 
 async function saveVpn(includePassword = false) {
@@ -223,10 +235,11 @@ $$(`[data-go]`).forEach(item => item.addEventListener("click", () => switchPage(
 $("#menu-button").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
 $("#vpn-form").elements.route_mode.addEventListener("change", updateRouteModeFields);
 $("#vpn-form").elements.keepalive_enabled.addEventListener("change", updateKeepaliveFields);
+$("#vpn-form").elements.dns_mode.addEventListener("change", updateDnsModeFields);
 
 $("#vpn-form").addEventListener("submit", async event => {
   event.preventDefault();
-  try { await saveVpn(false); toast("VPN 配置已保存；重连与保活设置已更新"); }
+  try { await saveVpn(false); toast("配置已保存；DNS 与路由将在下次连接时生效，保活设置已更新"); }
   catch (error) { toast(error.message, "error"); }
 });
 

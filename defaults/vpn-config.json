@@ -13,6 +13,8 @@
   "route_mode": "all",
   "manual_routes": [],
   "manual_exclude_routes": [],
+  "dns_mode": "system",
+  "dns_servers": [],
   "reconnect_timeout": 300,
   "auto_reconnect": true,
   "auto_reconnect_interval": 10,

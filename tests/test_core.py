@@ -12,6 +12,7 @@ from app.core import (
     extract_certificate_candidate,
     normalize_vpn_route_config,
     perform_keepalive_request,
+    resolve_vpn_gateway,
     validate_keepalive_url,
     validate_server,
     vpn_route_environment,
@@ -124,6 +125,40 @@ class OpenConnectCommandTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             build_openconnect_command(config)
 
+    def test_resolves_and_pins_gateway_before_starting_process(self):
+        manager = ProcessManager()
+        config = self.base_config()
+
+        with (
+            patch.object(manager, "ensure_direct_fallback") as fallback,
+            patch("app.core.resolve_vpn_gateway", return_value=("vpn.company.test", "203.0.113.20")),
+            patch.object(manager, "_spawn") as spawn,
+        ):
+            manager._start_vpn_attempt(config, "secret")
+
+        fallback.assert_called_once_with()
+        command = spawn.call_args.args[1]
+        self.assertIn("--resolve=vpn.company.test:203.0.113.20", command)
+
+
+class VpnGatewayResolutionTests(unittest.TestCase):
+    def test_uses_pre_tunnel_system_resolver(self):
+        with patch(
+            "app.core.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.21", 443))],
+        ) as resolver:
+            result = resolve_vpn_gateway("https://vpn.example.test")
+
+        self.assertEqual(result, ("vpn.example.test", "203.0.113.21"))
+        resolver.assert_called_once()
+
+    def test_skips_resolution_for_literal_gateway_ip(self):
+        with patch("app.core.socket.getaddrinfo") as resolver:
+            result = resolve_vpn_gateway("https://203.0.113.22")
+
+        self.assertIsNone(result)
+        resolver.assert_not_called()
+
 
 class VpnRouteConfigTests(unittest.TestCase):
     def test_defaults_to_all_mode(self):
@@ -157,9 +192,38 @@ class VpnRouteConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             normalize_vpn_route_config({"route_mode": "manual", "manual_routes": ["invalid"]})
 
+    def test_normalizes_manual_global_dns_and_environment(self):
+        config = normalize_vpn_route_config(
+            {"dns_mode": "manual", "dns_servers": "10.0.0.53, 2001:db8::53"}
+        )
+
+        self.assertEqual(config["dns_servers"], ["10.0.0.53", "2001:db8::53"])
+        environment = vpn_route_environment(config)
+        self.assertEqual(environment["XRAY_VPN_DNS_MODE"], "manual")
+        self.assertEqual(environment["XRAY_VPN_DNS_SERVERS"], "10.0.0.53\n2001:db8::53")
+
+    def test_requires_server_for_manual_global_dns(self):
+        with self.assertRaises(ConfigError):
+            normalize_vpn_route_config({"dns_mode": "manual", "dns_servers": []})
+
+    def test_rejects_invalid_global_dns_server(self):
+        with self.assertRaises(ConfigError):
+            normalize_vpn_route_config({"dns_mode": "manual", "dns_servers": ["dns.test"]})
+
+    def test_rejects_too_many_global_dns_servers(self):
+        with self.assertRaises(ConfigError):
+            normalize_vpn_route_config(
+                {
+                    "dns_mode": "manual",
+                    "dns_servers": ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"],
+                }
+            )
+
     def test_adds_reconnect_and_keepalive_defaults(self):
         config = normalize_vpn_route_config({})
 
+        self.assertEqual(config["dns_mode"], "system")
+        self.assertEqual(config["dns_servers"], [])
         self.assertTrue(config["auto_reconnect"])
         self.assertEqual(config["auto_reconnect_interval"], 10)
         self.assertFalse(config["keepalive_enabled"])
