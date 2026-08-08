@@ -5,24 +5,52 @@ from app.core import ConfigError, build_openconnect_command, effective_xray_conf
 
 
 class EffectiveXrayConfigTests(unittest.TestCase):
-    def test_marks_every_network_outbound_without_mutating_source(self):
+    def test_marks_only_selected_outbounds_without_mutating_source(self):
         source = {
             "inbounds": [{"protocol": "socks", "port": 1080}],
             "outbounds": [
                 {"protocol": "freedom", "tag": "direct"},
-                {"protocol": "socks", "tag": "next-hop", "streamSettings": {"sockopt": {"tcpFastOpen": True}}},
+                {"protocol": "freedom", "tag": "vpn-out", "streamSettings": {"sockopt": {"tcpFastOpen": True}}},
                 {"protocol": "blackhole", "tag": "blocked"},
             ],
         }
         original = copy.deepcopy(source)
 
-        result = effective_xray_config(source, mark=255)
+        result = effective_xray_config(source, mark=255, outbound_tags={"vpn-out"})
 
-        self.assertEqual(result["outbounds"][0]["streamSettings"]["sockopt"]["mark"], 255)
+        self.assertNotIn("streamSettings", result["outbounds"][0])
         self.assertEqual(result["outbounds"][1]["streamSettings"]["sockopt"]["mark"], 255)
         self.assertTrue(result["outbounds"][1]["streamSettings"]["sockopt"]["tcpFastOpen"])
         self.assertNotIn("streamSettings", result["outbounds"][2])
         self.assertEqual(source, original)
+
+    def test_does_not_mark_unselected_existing_sockopt(self):
+        source = {
+            "inbounds": [{"protocol": "socks", "port": 1080}],
+            "outbounds": [
+                {"protocol": "socks", "tag": "next-hop", "streamSettings": {"sockopt": {"mark": 42}}},
+                {"protocol": "freedom", "tag": "vpn-out"},
+            ],
+        }
+
+        result = effective_xray_config(source, mark=255, outbound_tags={"vpn-out"})
+
+        self.assertEqual(result["outbounds"][0]["streamSettings"]["sockopt"]["mark"], 42)
+        self.assertEqual(result["outbounds"][1]["streamSettings"]["sockopt"]["mark"], 255)
+
+    def test_default_selection_marks_vpn_out(self):
+        source = {
+            "inbounds": [{"protocol": "socks", "port": 1080}],
+            "outbounds": [
+                {"protocol": "freedom", "tag": "direct"},
+                {"protocol": "freedom", "tag": "vpn-out"},
+            ],
+        }
+
+        result = effective_xray_config(source, mark=255)
+
+        self.assertNotIn("streamSettings", result["outbounds"][0])
+        self.assertEqual(result["outbounds"][1]["streamSettings"]["sockopt"]["mark"], 255)
 
     def test_rejects_missing_outbound(self):
         with self.assertRaises(ConfigError):

@@ -13,6 +13,7 @@
 - 仅在确认来源后固定自签名证书指纹；优先使用企业 CA。
 - 将 `data/vpn/config.json`、客户端证书和私钥按密钥材料保护。
 - 容器只需要 `/dev/net/tun` 与 `NET_ADMIN`，不应授予 `privileged`。
+- 默认采用直接回落策略：VPN 断开后新代理连接可能从普通网络发出。不要将它当作防泄漏边界；需要 fail-closed 时应在上层防火墙实施。
 
 ## Sensitive data
 

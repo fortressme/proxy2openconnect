@@ -97,7 +97,7 @@ class VpnConfigBody(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    manager.ensure_fail_closed()
+    manager.ensure_direct_fallback()
     try:
         vpn = read_json(VPN_CONFIG)
         if vpn.get("autostart") and vpn.get("password"):

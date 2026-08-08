@@ -2,7 +2,7 @@
 
 通过 Docker 提供 **Xray 入站 → Cisco AnyConnect 兼容 VPN 出站** 的受控网络网关，并附带 Web 管理控制台。
 
-客户端连接容器的 SOCKS5 或 HTTP 代理后，Xray 为所有可联网 outbound 设置 Linux `SO_MARK`。独立策略路由表只允许这些连接从 OpenConnect 创建的 `tun0` 离开；VPN 未连接、认证失败或异常退出时，出口保持 `unreachable`，不会自动回落到普通网络。
+客户端连接容器的 SOCKS5 或 HTTP 代理后，Xray 只为指定标签的 outbound 设置 Linux `SO_MARK`。VPN 在线时，独立策略路由表仅将网关下发的 split-include 目标网段送入 OpenConnect 创建的 `tun0`，其余目标继续使用普通网络；split-exclude 网段也明确回落。VPN 未连接、认证失败或异常退出时会撤销该规则。其他 outbound 不受 VPN 策略影响。
 
 > 本项目使用开源 [OpenConnect](https://www.infradead.org/openconnect/) 实现 AnyConnect 协议兼容，不包含 Cisco 专有客户端，也不隶属于 Cisco。部署前请确认公司网络、安全和合规政策允许使用。
 
@@ -12,7 +12,7 @@
 - Cisco AnyConnect 兼容 VPN：用户名、认证组、密码、OTP/MFA、DTLS、客户端证书和企业 CA。
 - 自签名证书 TOFU：从失败日志提取 `pin-sha256`，由管理员确认后固定到当前网关。
 - Windows AnyConnect 4.10.08029 默认身份：UA、`os=win` 与 version-string 保持一致。
-- IPv4/IPv6 fail-closed 策略路由，VPN 断开时阻止 Xray 旁路泄漏。
+- 按 outbound 标签和 VPN 下发的 IPv4/IPv6 split 路由进行两级分流，未命中或断线时直接回落。
 - Web 登录、失败登录限流、安全响应头、HttpOnly 会话 Cookie。
 - VPN/Xray 独立启停、健康状态和最近 500 行内存日志。
 - Compose 持久化、可配置端口、Docker 日志轮转和优雅退出。
@@ -24,17 +24,17 @@
                          Web 管理端 :8000
                                 │
 客户端 ── SOCKS5 :1080 ─┐       │
-                        ├──► Xray ── SO_MARK 255 ──► policy table 200
+                        ├──► Xray ── vpn-out / SO_MARK 255 ──► policy table 200
 客户端 ─── HTTP :8080 ──┘                                  │
                                              ┌──────────────┴──────────────┐
-                                          VPN 在线                     VPN 离线
+                                     VPN 下发的目标网段                其他目标
                                              │                            │
-                                          tun0 出口                 unreachable
+                                          tun0 出口                 普通默认路由
                                              │
                                      Cisco ASA / VPN Gateway
 ```
 
-Web 服务、OpenConnect 控制连接和容器自身流量不带 Xray mark，继续使用普通默认路由，因此不会形成 VPN 递归。
+未被选中的 Xray outbound、Web 服务、OpenConnect 控制连接和容器自身流量不带应用注入的 mark，继续使用普通默认路由，因此不会形成 VPN 递归。
 
 ## 运行要求
 
@@ -115,10 +115,10 @@ VPN 状态显示“已连接”后执行：
 
 ```bash
 curl --proxy socks5h://xray:<代理密码>@127.0.0.1:1080 https://ifconfig.me
-curl --proxy http://xray:<代理密码>@127.0.0.1:8080 https://ifconfig.me
+curl --proxy http://xray:<代理密码>@127.0.0.1:8080 http://<VPN 下发网段中的目标地址>
 ```
 
-VPN 未连接时请求失败属于预期的 fail-closed 行为。
+第一个命令只验证普通代理连通性，因为公网目标通常不在 VPN 下发网段内；第二个命令用于验证目标网段确实进入 VPN。VPN 未连接时，默认 `vpn-out` 会通过普通网络继续工作。
 
 ## 持久化
 
@@ -158,6 +158,7 @@ data/
 | `HTTP_PROXY_PORT` | `8080` | HTTP Proxy 宿主机端口 |
 | `TZ` | `UTC` | 容器时区 |
 | `COOKIE_SECURE` | `false` | HTTPS 部署时必须设为 `true` |
+| `XRAY_VPN_OUTBOUND_TAGS` | `vpn-out` | 需要通过 VPN 的 outbound 标签；多个标签用逗号分隔 |
 | `APP_VERSION` | `0.1.0` | OCI 镜像与 API 版本 |
 | `IMAGE_NAME` | `xray2cisco` | Compose 镜像名 |
 | `IMAGE_TAG` | `0.1.0` | Compose 镜像标签 |
@@ -166,7 +167,7 @@ data/
 
 ## Xray 运行时规则
 
-Web 页面保存的是原始标准 Xray JSON。进程启动前，后端会创建临时有效配置，并为每个非 `blackhole` outbound 注入：
+Web 页面保存的是原始标准 Xray JSON。进程启动前，后端会创建临时有效配置，并只为 `XRAY_VPN_OUTBOUND_TAGS` 选中的 outbound 注入：
 
 ```json
 {
@@ -178,9 +179,9 @@ Web 页面保存的是原始标准 Xray JSON。进程启动前，后端会创建
 }
 ```
 
-原有 `streamSettings`/`sockopt` 会保留，但用户填写的 `mark` 会被强制覆盖。原始配置文件不会被这一过程改写。
+选中 outbound 原有的 `streamSettings`/`sockopt` 会保留，但其 `mark` 会被强制覆盖。未选中的 outbound 完全不修改，原始配置文件也不会被这一过程改写。
 
-默认 outbound 使用 IPv4。关闭“禁用 IPv6”且网关确实下发 IPv6 地址时，路由脚本会建立 IPv6 隧道路由；否则带 mark 的 IPv6 流量保持阻断。
+路由脚本读取 OpenConnect 提供的 `CISCO_SPLIT_INC_*`、`CISCO_SPLIT_EXC_*` 及其 IPv6 对应变量。表 200 只安装这些下发路由，不会仅凭 `INTERNAL_IP4_ADDRESS` 自行创建默认路由；只有网关明确下发 `0.0.0.0/0` 或 `::/0` 时才会形成全隧道路由。未命中的目标会继续查普通主路由。
 
 ## AnyConnect 身份
 
@@ -277,9 +278,20 @@ WSL 用户还应确认发行版和 Docker daemon 没有休眠。
 
 项目不会覆盖容器全局 DNS。请在 Xray `dns` 配置中加入可经 VPN 访问的企业 DNS，或在 Compose 中提供适合环境的 DNS 配置。
 
-### VPN 断开后代理无法访问互联网
+### VPN 已连接但目标没有进入隧道
 
-这是预期行为。策略表保留 `unreachable default`，防止流量从普通网络泄漏。
+检查网关实际下发的路由和策略表：
+
+```bash
+docker compose exec xray2cisco cat /run/xray2cisco/split-routes
+docker compose exec xray2cisco ip route show table 200
+```
+
+只有 `include` 条目会安装为 `tun0` 路由；未出现在下发列表中的目标按设计走普通网络。
+
+### VPN 断开后出口 IP 改变
+
+这是直接回落策略的预期行为。断线回调会删除应用的策略路由；新连接改用容器的普通默认路由，不会被主动阻断。若业务要求 VPN 断开时禁止流量，请在上层防火墙单独实施。
 
 ### TUN 或权限错误
 
@@ -333,7 +345,7 @@ docker buildx build \
 2. 确认 `.env` 与 `data/` 未进入版本控制或构建上下文。
 3. 搜索并删除真实 VPN 地址、用户名、密码、OTP 和证书指纹。
 4. 运行单元测试、ShellCheck、Docker build 和健康检查。
-5. 在隔离环境验证 VPN 连接、TUN 地址、IPv4/IPv6 fail-closed 和断线恢复。
+5. 在隔离环境验证 VPN 连接、TUN 地址、选择性 IPv4/IPv6 路由和断线回落。
 6. 审查基础镜像 digest 与依赖安全公告。
 7. 生成并发布多架构镜像，记录最终 manifest digest。
 8. 公开发布前选择并添加项目级 `LICENSE`。

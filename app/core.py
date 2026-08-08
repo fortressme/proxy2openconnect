@@ -23,8 +23,14 @@ XRAY_CONFIG = DATA_DIR / "xray" / "config.json"
 VPN_CONFIG = DATA_DIR / "vpn" / "config.json"
 RUNTIME_CONFIG = Path("/run/xray2cisco/xray-effective.json")
 VPN_CONNECTED = Path("/run/xray2cisco/vpn.connected")
+VPN_ROUTES = Path("/run/xray2cisco/split-routes")
 XRAY_MARK = int(os.getenv("XRAY_VPN_MARK", "255"))
 ROUTE_TABLE = int(os.getenv("XRAY_VPN_ROUTE_TABLE", "200"))
+VPN_OUTBOUND_TAGS = frozenset(
+    tag.strip()
+    for tag in os.getenv("XRAY_VPN_OUTBOUND_TAGS", "vpn-out").split(",")
+    if tag.strip()
+)
 XRAY_BINARY = os.getenv("XRAY_BINARY", "/usr/local/bin/xray")
 OPENCONNECT_BINARY = os.getenv("OPENCONNECT_BINARY", "/usr/sbin/openconnect")
 VPN_SCRIPT = "/opt/xray2cisco/scripts/vpn-script.sh"
@@ -86,17 +92,22 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
             os.unlink(tmp_name)
 
 
-def effective_xray_config(config: dict[str, Any], mark: int = XRAY_MARK) -> dict[str, Any]:
-    """Return a runtime copy where every network-capable outbound is VPN-marked."""
+def effective_xray_config(
+    config: dict[str, Any],
+    mark: int = XRAY_MARK,
+    outbound_tags: frozenset[str] | set[str] | None = None,
+) -> dict[str, Any]:
+    """Return a runtime copy where only selected outbounds are VPN-marked."""
     result = copy.deepcopy(config)
     outbounds = result.get("outbounds")
     if not isinstance(outbounds, list) or not outbounds:
         raise ConfigError("Xray 配置至少需要一个 outbound")
 
+    selected_tags = VPN_OUTBOUND_TAGS if outbound_tags is None else outbound_tags
     for index, outbound in enumerate(outbounds):
         if not isinstance(outbound, dict):
             raise ConfigError(f"outbounds[{index}] 必须是对象")
-        if outbound.get("protocol") == "blackhole":
+        if outbound.get("protocol") == "blackhole" or outbound.get("tag") not in selected_tags:
             continue
         stream = outbound.setdefault("streamSettings", {})
         if not isinstance(stream, dict):
@@ -242,7 +253,7 @@ class ProcessManager:
                 service.last_exit_code = code
                 self._append(service, f"进程已退出，代码 {code}")
                 if service.name == "vpn":
-                    self.ensure_fail_closed()
+                    self.ensure_direct_fallback()
 
     def _spawn(self, name: str, command: list[str], stdin_text: str | None = None) -> None:
         service = self.services[name]
@@ -324,13 +335,13 @@ class ProcessManager:
             process.wait(timeout=3)
         with self.lock:
             if name == "vpn" and service.process is process:
-                self.ensure_fail_closed()
+                self.ensure_direct_fallback()
 
     def restart_xray(self) -> None:
         self.stop("xray")
         self.start_xray()
 
-    def ensure_fail_closed(self) -> None:
+    def ensure_direct_fallback(self) -> None:
         script = "/opt/xray2cisco/scripts/route-guard.sh"
         if Path(script).exists() and shutil.which("ip"):
             subprocess.run([script], capture_output=True, text=True, timeout=10, check=False)
@@ -381,10 +392,18 @@ class ProcessManager:
         vpn_ip = None
         if VPN_CONNECTED.exists():
             vpn_ip = VPN_CONNECTED.read_text(encoding="utf-8").strip()
+        vpn_routes: list[str] = []
+        if VPN_ROUTES.exists():
+            vpn_routes = [
+                line.strip()
+                for line in VPN_ROUTES.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
         return {
             "services": services,
             "vpn_connected": bool(vpn_ip and services["vpn"]["running"]),
             "vpn_ip": vpn_ip,
+            "vpn_routes": vpn_routes,
             "route_table": ROUTE_TABLE,
             "mark": XRAY_MARK,
             "certificate_candidate": self.certificate_candidate(),

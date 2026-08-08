@@ -68,7 +68,7 @@
         <div class="metric-grid">
           <article class="metric-card"><div class="metric-head"><span>Xray Core</span><span id="xray-badge" class="badge">已停止</span></div><strong id="xray-state">Offline</strong><p>入站代理与流量标记</p><button id="overview-xray-action" class="button secondary">启动 Xray</button></article>
           <article class="metric-card"><div class="metric-head"><span>AnyConnect Tunnel</span><span id="vpn-badge" class="badge">未连接</span></div><strong id="vpn-state">Disconnected</strong><p id="vpn-detail">企业 VPN 隧道</p><button class="button secondary" data-go="vpn">管理连接</button></article>
-          <article class="metric-card"><div class="metric-head"><span>Egress Guard</span><span class="badge success">强制</span></div><strong>Fail Closed</strong><p>VPN 断开时阻止 Xray 旁路</p><div class="mini-rule"><code>fwmark 0xff</code><span>→</span><code>table 200</code></div></article>
+          <article class="metric-card"><div class="metric-head"><span>Egress Policy</span><span class="badge success">分流</span></div><strong>VPN Split Routes</strong><p>仅 VPN 下发网段进入隧道</p><div class="mini-rule"><code>split include</code><span>→</span><code>tun0</code></div></article>
         </div>
 
         <div class="notice"><span>i</span><p><strong>当前默认配置已开启代理认证。</strong>首次使用前请在 Xray 配置中修改 <code>change-me</code> 密码，并限制宿主机端口的可访问来源。</p></div>
@@ -113,7 +113,7 @@
       </section>
 
       <section id="page-xray" class="page">
-        <div class="section-intro"><div><p class="eyebrow">JSON CONFIGURATION</p><h1>Xray 配置</h1><p>保存的是原始配置；运行时会自动为所有可联网 outbound 注入 <code>sockopt.mark = 255</code>。</p></div><div class="editor-actions"><button id="xray-validate" class="button secondary">校验配置</button><button id="xray-save" class="button primary">保存并重启</button></div></div>
+        <div class="section-intro"><div><p class="eyebrow">JSON CONFIGURATION</p><h1>Xray 配置</h1><p>保存的是原始配置；运行时只为标签为 <code>vpn-out</code> 的 outbound 注入 <code>sockopt.mark = 255</code>。</p></div><div class="editor-actions"><button id="xray-validate" class="button secondary">校验配置</button><button id="xray-save" class="button primary">保存并重启</button></div></div>
         <div class="editor-shell">
           <div class="editor-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>/data/xray/config.json</span><span id="editor-status">JSON</span></div>
           <div class="editor-wrap"><pre id="line-numbers" aria-hidden="true"></pre><textarea id="xray-editor" spellcheck="false" aria-label="Xray JSON 配置"></textarea></div>

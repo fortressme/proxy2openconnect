@@ -62,13 +62,14 @@ async function refreshStatus() {
     const xray = status.services.xray.running;
     const vpnProcess = status.services.vpn.running;
     const connected = status.vpn_connected;
+    const vpnRouteCount = (status.vpn_routes || []).filter(route => route.includes(" include ")).length;
     setDot("#top-vpn-dot", connected, vpnProcess);
     setDot("#vpn-page-dot", connected, vpnProcess);
     $("#top-vpn-text").textContent = connected ? "VPN 已连接" : vpnProcess ? "VPN 连接中" : "VPN 未连接";
     $("#vpn-page-state").textContent = connected ? "已连接" : vpnProcess ? "连接中" : "未连接";
     $("#route-vpn-ip").textContent = connected ? (status.vpn_ip || "隧道在线") : "等待连接";
     $("#vpn-state").textContent = connected ? "Connected" : vpnProcess ? "Connecting" : "Disconnected";
-    $("#vpn-detail").textContent = connected ? `隧道地址 ${status.vpn_ip}` : "企业 VPN 隧道";
+    $("#vpn-detail").textContent = connected ? `隧道地址 ${status.vpn_ip} · ${vpnRouteCount} 条下发路由` : "企业 VPN 隧道";
     $("#vpn-badge").textContent = connected ? "已连接" : vpnProcess ? "连接中" : "未连接";
     $("#vpn-badge").classList.toggle("success", connected);
     $("#xray-state").textContent = xray ? "Online" : "Offline";
