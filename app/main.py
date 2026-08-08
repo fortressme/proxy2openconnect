@@ -167,6 +167,16 @@ def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse(STATIC_DIR / "brand" / "favicon.ico", media_type="image/x-icon")
+
+
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+def apple_touch_icon():
+    return FileResponse(STATIC_DIR / "brand" / "apple-touch-icon.png", media_type="image/png")
+
+
 @app.post("/api/login")
 def login(body: LoginBody, request: Request, response: Response):
     client_ip = request.client.host if request.client else "unknown"

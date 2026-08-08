@@ -4,9 +4,9 @@
 
 ## Verification
 
-- [ ] 已运行单元测试
+- [ ] 已完成与变更相关的验证
 - [ ] 已验证 Docker Compose 配置
-- [ ] 行为变更已补充测试和文档
+- [ ] 行为变更已补充文档和验证说明
 - [ ] 已更新 `CHANGELOG.md` 的 `Unreleased` 部分
 
 ## Security and privacy

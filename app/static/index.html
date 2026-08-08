@@ -4,7 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#10151b">
+  <meta name="description" content="proxy2openconnect — Xray 代理与 OpenConnect VPN 出口控制台">
   <title>proxy2openconnect</title>
+  <link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/static/brand/site.webmanifest">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -13,8 +19,9 @@
 
   <div id="login-screen" class="login-screen hidden">
     <form id="login-form" class="login-card">
-      <div class="brand-mark" aria-hidden="true">
-        <span></span><span></span><span></span>
+      <div class="login-brand">
+        <img class="brand-mark" src="/static/brand/logo-mark.svg" alt="">
+        <div><strong>proxy<span>2</span>openconnect</strong><small>Xray · OpenConnect</small></div>
       </div>
       <p class="eyebrow">SECURE EGRESS CONSOLE</p>
       <h1>进入控制台</h1>
@@ -29,8 +36,8 @@
   <div id="app-shell" class="app-shell hidden">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark small" aria-hidden="true"><span></span><span></span><span></span></div>
-        <div><strong>proxy2openconnect</strong><small>Xray · OpenConnect</small></div>
+        <img class="brand-mark small" src="/static/brand/logo-mark.svg" alt="">
+        <div><strong>proxy<span>2</span>openconnect</strong><small>Xray · OpenConnect</small></div>
       </div>
       <nav aria-label="主要导航">
         <button class="nav-item active" data-page="overview"><i>◫</i>运行总览</button>

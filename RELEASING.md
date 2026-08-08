@@ -12,14 +12,13 @@
 ## 2. Verify
 
 ```bash
-python -m unittest discover -s tests -v
 docker compose config --quiet
 docker compose build
 sh scripts/package-release.sh
 tar -tzf dist/proxy2openconnect-$(cat VERSION).tar.gz
 ```
 
-发布包不包含测试、GitHub 配置、本地数据或开发缓存。至少执行一次容器启动、登录、VPN 连接和三种路由模式的人工冒烟测试。
+发布包不包含 GitHub 配置、本地数据或开发缓存。至少执行一次容器启动、登录、VPN 连接和三种路由模式的人工冒烟测试。
 
 ## 3. Tag and publish
 

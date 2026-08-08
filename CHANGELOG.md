@@ -4,6 +4,7 @@
 
 ## [Unreleased]
 
+- 增加项目 Logo、浏览器 favicon、Apple Touch/Web App 图标，并将品牌标识应用到登录页、控制台侧栏和 README。
 - 增加 VPN 会话退出后的自动重连（最多连续 5 次），以及可在 Web 控制台配置 HTTP(S) 地址和间隔的网址保活。
 - 增加全局 DNS 来源选择、手动 DNS 服务器配置、系统解析器恢复和 DNS 专用 VPN 路由。
 - 增加反向代理公网来源白名单，修复 HTTPS 终止代理后的写请求来源校验。

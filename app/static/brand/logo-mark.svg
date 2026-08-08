@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">proxy2openconnect</title>
+  <desc id="desc">Two proxy paths converging into an open network tunnel.</desc>
+  <rect x="1" y="1" width="62" height="62" rx="17" fill="#10151B" stroke="#2B3825" stroke-width="2"/>
+  <g fill="none" stroke="#9BEF4D" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13 19h8c5.5 0 7.1 6.1 11 10" stroke-width="5"/>
+    <path d="M13 45h8c5.5 0 7.1-6.1 11-10" stroke-width="5"/>
+    <path d="M31 32h19" stroke-width="5"/>
+    <path d="M43.5 18.4A15.5 15.5 0 1 1 43.5 45.6" stroke-width="5"/>
+  </g>
+  <g fill="#9BEF4D">
+    <circle cx="12.5" cy="19" r="3.5"/>
+    <circle cx="12.5" cy="45" r="3.5"/>
+    <path d="m48 26 7 6-7 6z"/>
+  </g>
+</svg>
