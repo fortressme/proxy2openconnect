@@ -1,0 +1,237 @@
+# -----------------------------------------------------------------------------
+# xray2cisco runtime data and release artifacts
+# -----------------------------------------------------------------------------
+/data/
+/dist/
+/build/
+/release/
+/artifacts/
+/backups/
+/.test-data/
+/tmp/
+/temp/
+/run/
+
+# -----------------------------------------------------------------------------
+# Environment variables and local overrides
+# Keep sanitized templates in version control.
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+*.local.*
+config.local.*
+
+# -----------------------------------------------------------------------------
+# Credentials, certificates, VPN profiles, and key material
+# -----------------------------------------------------------------------------
+secrets/
+secret/
+credentials/
+private/
+certs/
+certificates/
+*.secret
+*.secrets
+*.token
+*.tokens
+*.credentials
+credentials.json
+credentials.*.json
+*-credentials.json
+service-account*.json
+auth.json
+.netrc
+_netrc
+.git-credentials
+.npmrc
+.pypirc
+
+*.pem
+*.key
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pkcs12
+*.crt
+*.cer
+*.csr
+*.der
+*.ovpn
+*.pcf
+*.mobileconfig
+*.kubeconfig
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+
+# User-level credential/configuration directories accidentally copied into repo
+.ssh/
+.gnupg/
+.aws/
+.azure/
+.config/gcloud/
+.kube/
+.docker/config.json
+
+# Infrastructure secrets and local state
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+.terraform/
+.terragrunt-cache/
+
+# -----------------------------------------------------------------------------
+# Logs, process state, databases, dumps, and backups
+# -----------------------------------------------------------------------------
+*.log
+logs/
+*.pid
+*.pid.lock
+*.sock
+*.socket
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.dump
+*.sql.gz
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*~
+
+# Archives and generated release bundles
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tar.xz
+*.7z
+*.rar
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# -----------------------------------------------------------------------------
+# Node.js and frontend tooling
+# -----------------------------------------------------------------------------
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+.parcel-cache/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# -----------------------------------------------------------------------------
+# Common compiler/build caches
+# -----------------------------------------------------------------------------
+target/
+out/
+bin/
+obj/
+.cache/
+.gradle/
+.cargo/
+*.class
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.exe
+
+# -----------------------------------------------------------------------------
+# Editors, IDEs, and local history
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+.fleet/
+.vs/
+.settings/
+.project
+.classpath
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*.swn
+.history/
+.localhistory/
+.local-history/
+.bash_history
+.zsh_history
+.python_history
+.node_repl_history
+.lesshst
+.mysql_history
+.psql_history
+
+# -----------------------------------------------------------------------------
+# Operating-system metadata
+# -----------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100/
+.Trashes/
+.fseventsd/
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+System Volume Information/
+
+# -----------------------------------------------------------------------------
+# Test/report tooling not covered above
+# -----------------------------------------------------------------------------
+.junit/
+test-results/
+playwright-report/
+blob-report/
+allure-results/
+allure-report/

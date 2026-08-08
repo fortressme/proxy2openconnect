@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Xray → Cisco VPN Gateway</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+
+  <div id="login-screen" class="login-screen hidden">
+    <form id="login-form" class="login-card">
+      <div class="brand-mark" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <p class="eyebrow">SECURE EGRESS CONSOLE</p>
+      <h1>进入控制台</h1>
+      <p class="muted">管理 Xray 入站与 Cisco AnyConnect 兼容 VPN 出口。</p>
+      <label>用户名<input id="login-username" autocomplete="username" value="admin" required></label>
+      <label>密码<input id="login-password" type="password" autocomplete="current-password" required></label>
+      <p id="login-error" class="form-error" role="alert"></p>
+      <button class="button primary full" type="submit">安全登录</button>
+    </form>
+  </div>
+
+  <div id="app-shell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark small" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div><strong>RouteDeck</strong><small>Xray · AnyConnect</small></div>
+      </div>
+      <nav aria-label="主要导航">
+        <button class="nav-item active" data-page="overview"><i>◫</i>运行总览</button>
+        <button class="nav-item" data-page="vpn"><i>⌁</i>VPN 配置</button>
+        <button class="nav-item" data-page="xray"><i>◇</i>Xray 配置</button>
+        <button class="nav-item" data-page="logs"><i>≡</i>实时日志</button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="guard-row"><span class="status-dot green"></span><div><strong>防泄漏已启用</strong><small>Mark 255 · Table 200</small></div></div>
+        <button id="logout-button" class="text-button">退出登录</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="menu-button" class="icon-button menu-button" aria-label="打开菜单">☰</button>
+        <div><p class="eyebrow">NETWORK CONTROL PLANE</p><h2 id="page-title">运行总览</h2></div>
+        <div class="top-status"><span id="top-vpn-dot" class="status-dot"></span><span id="top-vpn-text">VPN 未连接</span></div>
+      </header>
+
+      <section id="page-overview" class="page active">
+        <div class="hero-panel">
+          <div>
+            <p class="eyebrow">TRAFFIC PATH</p>
+            <h1>一条可见、可控的<br><span>企业网络出口。</span></h1>
+            <p class="hero-copy">代理请求进入 Xray，经策略标记后只允许通过 AnyConnect 隧道离开容器。</p>
+          </div>
+          <div class="route-map" aria-label="Xray 到 VPN 的流量路径">
+            <div class="route-node"><small>INBOUND</small><strong>SOCKS / HTTP</strong><span>1080 · 8080</span></div>
+            <div class="route-line"><i></i><b>MARK 255</b></div>
+            <div class="route-node accent"><small>EGRESS</small><strong>CISCO VPN</strong><span id="route-vpn-ip">等待连接</span></div>
+          </div>
+        </div>
+
+        <div class="metric-grid">
+          <article class="metric-card"><div class="metric-head"><span>Xray Core</span><span id="xray-badge" class="badge">已停止</span></div><strong id="xray-state">Offline</strong><p>入站代理与流量标记</p><button id="overview-xray-action" class="button secondary">启动 Xray</button></article>
+          <article class="metric-card"><div class="metric-head"><span>AnyConnect Tunnel</span><span id="vpn-badge" class="badge">未连接</span></div><strong id="vpn-state">Disconnected</strong><p id="vpn-detail">企业 VPN 隧道</p><button class="button secondary" data-go="vpn">管理连接</button></article>
+          <article class="metric-card"><div class="metric-head"><span>Egress Guard</span><span class="badge success">强制</span></div><strong>Fail Closed</strong><p>VPN 断开时阻止 Xray 旁路</p><div class="mini-rule"><code>fwmark 0xff</code><span>→</span><code>table 200</code></div></article>
+        </div>
+
+        <div class="notice"><span>i</span><p><strong>当前默认配置已开启代理认证。</strong>首次使用前请在 Xray 配置中修改 <code>change-me</code> 密码，并限制宿主机端口的可访问来源。</p></div>
+      </section>
+
+      <section id="page-vpn" class="page">
+        <div class="section-intro"><div><p class="eyebrow">ANYCONNECT COMPATIBLE</p><h1>VPN 配置</h1><p>通过 OpenConnect 接入 Cisco AnyConnect 网关。密码可仅用于本次连接，也可保存在数据卷中。</p></div><div class="connection-pill"><span id="vpn-page-dot" class="status-dot"></span><div><small>隧道状态</small><strong id="vpn-page-state">未连接</strong></div></div></div>
+        <div class="two-column">
+          <form id="vpn-form" class="panel form-panel">
+            <div class="panel-title"><div><p class="eyebrow">CONNECTION PROFILE</p><h3>连接资料</h3></div><span id="saved-password-badge" class="badge">无已存密码</span></div>
+            <div class="field-grid">
+              <label class="wide">VPN 服务器<input name="server" placeholder="https://vpn.company.com" required></label>
+              <label>用户名<input name="username" autocomplete="username" required></label>
+              <label>认证组 / Group<input name="authgroup" placeholder="可选"></label>
+              <label class="wide">服务器证书指纹<input name="servercert" placeholder="sha256:...（可选）"></label>
+              <label class="wide">User-Agent<input name="useragent"></label>
+              <label>重连窗口（秒）<input name="reconnect_timeout" type="number" min="0" max="86400" value="300"></label>
+              <label>CA 文件路径<input name="cafile" placeholder="/data/certs/ca.pem"></label>
+              <label>客户端证书路径<input name="certificate" placeholder="/data/certs/client.p12"></label>
+              <label>私钥路径<input name="sslkey" placeholder="/data/certs/client.key"></label>
+              <label class="wide">额外参数<textarea name="extra_args" rows="3" placeholder="每行一个参数，例如 --os=linux-64"></textarea></label>
+            </div>
+            <div class="check-row"><label><input type="checkbox" name="no_dtls"> 禁用 DTLS</label><label><input type="checkbox" name="disable_ipv6" checked> 禁用 IPv6</label><label><input type="checkbox" name="autostart"> 容器启动时自动连接</label></div>
+            <div class="form-actions"><button class="button primary" type="submit">保存 VPN 配置</button></div>
+          </form>
+
+          <div class="panel connect-panel">
+            <div><p class="eyebrow">SESSION AUTHENTICATION</p><h3>建立隧道</h3><p class="muted">临时凭据只会通过标准输入交给 OpenConnect，不会出现在命令行中。</p></div>
+            <label>VPN 密码<input id="connect-password" type="password" autocomplete="current-password" placeholder="留空则使用已保存密码"></label>
+            <label>一次性验证码 / MFA<input id="connect-otp" inputmode="numeric" autocomplete="one-time-code" placeholder="可选"></label>
+            <label class="save-secret"><input id="save-password" type="checkbox"> 将本次密码保存到数据卷</label>
+            <div class="stack-actions"><button id="vpn-connect" class="button primary full">连接 VPN</button><button id="vpn-disconnect" class="button danger full">断开连接</button></div>
+            <div id="certificate-trust-card" class="certificate-trust hidden" role="alert">
+              <div class="trust-heading"><span>!</span><div><strong>检测到未受信任的证书</strong><small id="certificate-host">VPN 网关</small></div></div>
+              <code id="certificate-pin"></code>
+              <p>确认指纹来源后，可将该证书公钥固定到当前 VPN 配置。证书变化时连接会再次被阻止。</p>
+              <button id="trust-certificate" class="button warning full" type="button">信任此证书指纹</button>
+            </div>
+            <div class="security-note"><span>⌾</span><p>若公司网关强制浏览器 SSO、主机检查或交互式多阶段 MFA，非交互容器登录可能不被支持。</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-xray" class="page">
+        <div class="section-intro"><div><p class="eyebrow">JSON CONFIGURATION</p><h1>Xray 配置</h1><p>保存的是原始配置；运行时会自动为所有可联网 outbound 注入 <code>sockopt.mark = 255</code>。</p></div><div class="editor-actions"><button id="xray-validate" class="button secondary">校验配置</button><button id="xray-save" class="button primary">保存并重启</button></div></div>
+        <div class="editor-shell">
+          <div class="editor-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>/data/xray/config.json</span><span id="editor-status">JSON</span></div>
+          <div class="editor-wrap"><pre id="line-numbers" aria-hidden="true"></pre><textarea id="xray-editor" spellcheck="false" aria-label="Xray JSON 配置"></textarea></div>
+        </div>
+      </section>
+
+      <section id="page-logs" class="page">
+        <div class="section-intro"><div><p class="eyebrow">PROCESS OUTPUT</p><h1>实时日志</h1><p>最近 500 行进程输出，仅保存在内存中。</p></div><button id="refresh-logs" class="button secondary">立即刷新</button></div>
+        <div class="log-tabs"><button class="active" data-log="vpn">VPN / OpenConnect</button><button data-log="xray">Xray Core</button></div>
+        <div class="terminal"><div class="terminal-bar"><span></span><span></span><span></span><b id="terminal-title">openconnect — live</b></div><pre id="log-output">等待日志…</pre></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

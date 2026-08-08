@@ -1,0 +1,19 @@
+{
+  "server": "",
+  "username": "",
+  "password": "",
+  "authgroup": "",
+  "servercert": "",
+  "useragent": "AnyConnect Windows 4.10.08029",
+  "certificate": "",
+  "sslkey": "",
+  "cafile": "",
+  "no_dtls": false,
+  "disable_ipv6": true,
+  "reconnect_timeout": 300,
+  "extra_args": [
+    "--os=win",
+    "--version-string=4.10.08029"
+  ],
+  "autostart": false
+}
