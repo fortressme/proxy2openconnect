@@ -23,7 +23,9 @@ from .core import (
     atomic_write_json,
     build_openconnect_command,
     manager,
+    normalize_http_origin,
     normalize_vpn_route_config,
+    parse_trusted_origins,
     read_json,
     validate_xray_shape,
 )
@@ -36,6 +38,10 @@ ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 SESSION_SECRET = os.environ["SESSION_SECRET"].encode()
 COOKIE_NAME = "x2c_session"
 SESSION_TTL = 12 * 60 * 60
+try:
+    TRUSTED_ORIGINS = parse_trusted_origins(os.getenv("TRUSTED_ORIGINS", ""))
+except ConfigError as exc:
+    raise RuntimeError(f"TRUSTED_ORIGINS 配置无效: {exc}") from exc
 if len(ADMIN_PASSWORD) < 12:
     raise RuntimeError("ADMIN_PASSWORD 至少需要 12 个字符")
 if len(SESSION_SECRET) < 32:
@@ -76,8 +82,14 @@ def require_user(request: Request) -> str:
         raise HTTPException(status_code=401, detail="请先登录")
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         origin = request.headers.get("origin")
-        if origin and origin != str(request.base_url).rstrip("/"):
-            raise HTTPException(status_code=403, detail="请求来源无效")
+        if origin:
+            try:
+                request_origin = normalize_http_origin(origin)
+                local_origin = normalize_http_origin(str(request.base_url))
+            except ConfigError as exc:
+                raise HTTPException(status_code=403, detail="请求来源无效") from exc
+            if request_origin not in TRUSTED_ORIGINS and request_origin != local_origin:
+                raise HTTPException(status_code=403, detail="请求来源无效")
     return user
 
 

@@ -146,6 +146,35 @@ def validate_server(server: str) -> str:
     return candidate
 
 
+def normalize_http_origin(value: str) -> str:
+    candidate = value.strip()
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConfigError("可信来源必须是有效的 HTTP 或 HTTPS 来源")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ConfigError("可信来源不能包含凭据、查询参数或片段")
+    if parsed.path not in {"", "/"}:
+        raise ConfigError("可信来源不能包含路径")
+    try:
+        port = parsed.port
+        host = parsed.hostname.encode("idna").decode("ascii").lower()
+    except (ValueError, UnicodeError) as exc:
+        raise ConfigError("可信来源的主机名或端口无效") from exc
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = 443 if parsed.scheme == "https" else 80
+    port_suffix = f":{port}" if port and port != default_port else ""
+    return f"{parsed.scheme}://{host}{port_suffix}"
+
+
+def parse_trusted_origins(value: str) -> frozenset[str]:
+    return frozenset(
+        normalize_http_origin(item)
+        for item in value.split(",")
+        if item.strip()
+    )
+
+
 def validate_keepalive_url(value: str) -> str:
     """Validate a user-configured HTTP(S) target used to generate tunnel traffic."""
     candidate = value.strip()

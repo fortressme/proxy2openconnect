@@ -11,6 +11,8 @@ from app.core import (
     effective_xray_config,
     extract_certificate_candidate,
     normalize_vpn_route_config,
+    normalize_http_origin,
+    parse_trusted_origins,
     perform_keepalive_request,
     resolve_vpn_gateway,
     validate_keepalive_url,
@@ -25,6 +27,24 @@ class ImmediateThread:
 
     def start(self):
         self.target()
+
+
+class TrustedOriginTests(unittest.TestCase):
+    def test_normalizes_default_ports_and_host_case(self):
+        self.assertEqual(normalize_http_origin("https://VPN.Example.Test:443/"), "https://vpn.example.test")
+        self.assertEqual(normalize_http_origin("http://vpn.example.test:8080"), "http://vpn.example.test:8080")
+
+    def test_parses_multiple_origins(self):
+        self.assertEqual(
+            parse_trusted_origins("https://one.example.test, https://two.example.test"),
+            frozenset({"https://one.example.test", "https://two.example.test"}),
+        )
+
+    def test_rejects_path_and_credentials(self):
+        with self.assertRaises(ConfigError):
+            normalize_http_origin("https://vpn.example.test/admin")
+        with self.assertRaises(ConfigError):
+            normalize_http_origin("https://user:secret@vpn.example.test")
 
 
 class EffectiveXrayConfigTests(unittest.TestCase):

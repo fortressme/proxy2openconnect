@@ -222,11 +222,23 @@ docker compose exec proxy2openconnect ip route show table 200
 | `HTTP_PROXY_PORT` | `8080` | HTTP Proxy 端口 |
 | `XRAY_VPN_OUTBOUND_TAGS` | `vpn-out` | 需要 VPN 策略的 outbound 标签 |
 | `COOKIE_SECURE` | `false` | Web 使用 HTTPS 时设为 `true` |
+| `TRUSTED_ORIGINS` | 空 | 允许执行写操作的公网 Web 来源，多个来源用逗号分隔 |
 | `TZ` | `UTC` | 容器时区 |
 | `IMAGE_NAME` | GHCR 项目镜像 | Compose 镜像名 |
 | `IMAGE_TAG` | `latest` | 镜像标签；生产环境建议固定版本 |
 
 如需从其他主机访问，修改 `BIND_ADDRESS` 前必须配置主机防火墙、强代理密码和 Web HTTPS 反向代理。
+
+### HTTPS 反向代理
+
+通过反向代理公开控制台时，在 `.env` 中填写浏览器实际访问的来源。来源只包含协议、域名和可选端口，不能包含路径：
+
+```dotenv
+COOKIE_SECURE=true
+TRUSTED_ORIGINS=https://vpn.example.com
+```
+
+多个入口可使用逗号分隔，例如 `https://vpn.example.com,https://vpn-admin.example.com`。修改后重新创建容器。反向代理仍应传递原始 `Host`、`X-Forwarded-Proto` 和客户端地址；`TRUSTED_ORIGINS` 用于写操作的来源校验，不会允许通配来源。
 
 ## 数据与运维
 
@@ -282,6 +294,10 @@ curl http://127.0.0.1:8000/health
 ```
 
 同时确认 `/dev/net/tun` 存在且 Compose 保留了 `NET_ADMIN`。
+
+### 反向代理后提示“请求来源无效”
+
+将公网访问地址加入 `.env` 的 `TRUSTED_ORIGINS`，同时在 HTTPS 部署中设置 `COOKIE_SECURE=true`，然后执行 `docker compose up -d --force-recreate`。
 
 ### VPN 已连接但目标没有进入隧道
 
