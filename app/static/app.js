@@ -144,6 +144,16 @@ function setTimestampText(selector, text, timestamp) {
   node.title = timestamp ? formatTimestamp(timestamp) : "";
 }
 
+function targetAddressSubtitle(target) {
+  const resolved = Array.isArray(target.addresses)
+    ? target.addresses
+    : [target.address].filter(Boolean);
+  if (target.domain && resolved.length) return `IP ${resolved.join(" · ")}`;
+  if (target.scope === "public") return "公网地址";
+  if (target.scope === "private") return "内网或本地地址";
+  return "目标地址";
+}
+
 function renderTargetConnections(targets) {
   const list = $("#target-list");
   const addresses = Array.isArray(targets?.addresses) ? targets.addresses : [];
@@ -164,7 +174,7 @@ function renderTargetConnections(targets) {
     endpoint.textContent = target.endpoint || `${target.address}:${target.port}`;
     endpoint.title = endpoint.textContent;
     const scope = document.createElement("small");
-    scope.textContent = target.scope === "public" ? "公网地址" : target.scope === "private" ? "内网或本地地址" : "目标地址";
+    scope.textContent = targetAddressSubtitle(target);
     address.append(endpoint, scope);
     const count = document.createElement("span");
     count.className = "target-count";
@@ -265,7 +275,7 @@ function renderTargetHistory(history) {
     endpoint.textContent = target.endpoint || `${target.address}:${target.port}`;
     endpoint.title = endpoint.textContent;
     const scope = document.createElement("small");
-    scope.textContent = target.scope === "public" ? "公网地址" : target.scope === "private" ? "内网或本地地址" : "目标地址";
+    scope.textContent = targetAddressSubtitle(target);
     endpointCell.append(endpoint, scope);
     const days = document.createElement("span");
     days.className = "history-cell history-days";

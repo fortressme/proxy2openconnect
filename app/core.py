@@ -53,6 +53,12 @@ class ConfigError(ValueError):
 
 CERT_HOST_PATTERN = re.compile(r'Certificate from VPN server "([^"\r\n]+)"')
 CERT_PIN_PATTERN = re.compile(r'--servercert\s+(pin-sha256:[A-Za-z0-9+/]{43}=)')
+XRAY_ACCESS_TARGET_PATTERN = re.compile(
+    r"\baccepted\s+(?P<network>tcp|udp):(?P<endpoint>\[[^]]+]:\d+|\S+:\d+)"
+    r"(?:\s+\((?P<domain>[^()\s]+)\))?\s+\[",
+    re.IGNORECASE,
+)
+XRAY_ACCESS_DOMAIN_PATTERN = re.compile(r"\bDomain:\s*([^,\s]+)", re.IGNORECASE)
 
 
 def extract_certificate_candidate(lines: list[str]) -> dict[str, str] | None:
@@ -631,6 +637,63 @@ def _format_endpoint(address: str, port: int) -> str:
     return f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
 
 
+def _split_endpoint(endpoint: str) -> tuple[str, int] | None:
+    if endpoint.startswith("["):
+        closing = endpoint.find("]:")
+        if closing < 0:
+            return None
+        host, port_text = endpoint[1:closing], endpoint[closing + 2 :]
+    else:
+        host, separator, port_text = endpoint.rpartition(":")
+        if not separator:
+            return None
+    try:
+        port = int(port_text)
+    except ValueError:
+        return None
+    if not host or not 0 < port <= 65535:
+        return None
+    return host, port
+
+
+def _parse_xray_access_target(line: str) -> dict[str, Any] | None:
+    match = XRAY_ACCESS_TARGET_PATTERN.search(line)
+    if not match or match.group("network").lower() != "tcp":
+        return None
+    parsed = _split_endpoint(match.group("endpoint"))
+    if not parsed:
+        return None
+    host, port = parsed
+    trailing_domain = XRAY_ACCESS_DOMAIN_PATTERN.search(line)
+    domain_hint = (
+        match.group("domain")
+        or (trailing_domain.group(1) if trailing_domain else "")
+    ).strip().lower().rstrip(".")
+    try:
+        address = str(ipaddress.ip_address(host))
+        domain = domain_hint or None
+    except ValueError:
+        address = None
+        domain = host.lower().rstrip(".")
+    return {
+        "domain": domain,
+        "address": address,
+        "port": port,
+        "observed_at": time.monotonic(),
+    }
+
+
+def _xray_access_log_path(config: dict[str, Any]) -> Path | None:
+    log = config.get("log")
+    if not isinstance(log, dict):
+        return None
+    value = log.get("access")
+    if not isinstance(value, str) or not value or value.lower() == "none":
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else Path.cwd() / path
+
+
 def _xray_tcp_connections(pid: int | None) -> list[dict[str, Any]]:
     socket_inodes = _process_socket_inodes(pid)
     connections: list[dict[str, Any]] = []
@@ -663,23 +726,38 @@ def _xray_tcp_connections(pid: int | None) -> list[dict[str, Any]]:
 
 
 def _summarize_xray_connections(
-    connections: list[dict[str, Any]], inbound_ports: list[int] | None = None
+    connections: list[dict[str, Any]],
+    inbound_ports: list[int] | None = None,
+    target_names: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     inbound_ports = _xray_inbound_ports() if inbound_ports is None else inbound_ports
+    target_names = target_names or {}
     client_counts: Counter[str] = Counter()
     target_counts: Counter[tuple[str, int]] = Counter()
+    target_addresses: dict[tuple[str, int], Counter[str]] = {}
+    target_domains: dict[tuple[str, int], str | None] = {}
     for connection in connections:
         if connection["local_port"] in inbound_ports:
             client_counts[connection["remote_address"]] += 1
         else:
-            target_counts[(connection["remote_address"], connection["remote_port"])] += 1
+            metadata = target_names.get(connection["inode"], {})
+            domain = metadata.get("domain")
+            primary = domain or connection["remote_address"]
+            key = (primary, connection["remote_port"])
+            target_counts[key] += 1
+            target_addresses.setdefault(key, Counter())[connection["remote_address"]] += 1
+            target_domains[key] = domain
 
     clients = [
         {"address": address, "connections": count}
         for address, count in client_counts.most_common(12)
     ]
     targets = []
-    for (address, port), count in target_counts.most_common(12):
+    for (primary, port), count in target_counts.most_common(12):
+        address_counts = target_addresses[(primary, port)]
+        addresses = [address for address, _ in address_counts.most_common(4)]
+        address = addresses[0]
+        domain = target_domains[(primary, port)]
         try:
             scope = "public" if ipaddress.ip_address(address).is_global else "private"
         except ValueError:
@@ -687,8 +765,10 @@ def _summarize_xray_connections(
         targets.append(
             {
                 "address": address,
+                "addresses": addresses,
+                "domain": domain,
                 "port": port,
-                "endpoint": _format_endpoint(address, port),
+                "endpoint": _format_endpoint(domain or address, port),
                 "connections": count,
                 "scope": scope,
             }
@@ -707,7 +787,7 @@ def _summarize_xray_connections(
         },
         "targets": {
             "active": sum(target_counts.values()),
-            "unique_addresses": len({address for address, _ in target_counts}),
+            "unique_addresses": len({primary for primary, _ in target_counts}),
             "unique_endpoints": len(target_counts),
             "addresses": targets,
         },
@@ -744,13 +824,19 @@ class TargetHistoryStore:
         self.directory = directory
         self.lock = threading.RLock()
         self.io_lock = threading.RLock()
-        self.pending: Counter[tuple[str, str, str, str, int]] = Counter()
-        self.last_seen: dict[tuple[str, str, str, str, int], float] = {}
+        self.pending: Counter[tuple[str, str, str, str, str, int]] = Counter()
+        self.last_seen: dict[tuple[str, str, str, str, str, int], float] = {}
 
-    def record(self, profile: dict[str, str], address: str, port: int) -> None:
+    def record(
+        self,
+        profile: dict[str, str],
+        address: str,
+        port: int,
+        domain: str | None = None,
+    ) -> None:
         timestamp = time.time()
         day = datetime.fromtimestamp(timestamp).date().isoformat()
-        key = (day, profile["id"], profile["server"], address, int(port))
+        key = (day, profile["id"], profile["server"], domain or "", address, int(port))
         with self.lock:
             self.pending[key] += 1
             self.last_seen[key] = timestamp
@@ -767,12 +853,13 @@ class TargetHistoryStore:
             self.directory.mkdir(parents=True, exist_ok=True)
             grouped: dict[tuple[str, str], list[str]] = {}
             for key, count in pending.items():
-                day, profile_id, server, address, port = key
+                day, profile_id, server, domain, address, port = key
                 payload = {
                     "timestamp": last_seen[key],
                     "vpn_id": profile_id,
                     "vpn_server": server,
                     "address": address,
+                    "domain": domain or None,
                     "port": port,
                     "count": count,
                 }
@@ -813,9 +900,10 @@ class TargetHistoryStore:
             self.flush()
             self.cleanup(profile, retention_days)
             cutoff = date.today() - timedelta(days=retention_days - 1)
-            counts: Counter[tuple[str, int]] = Counter()
-            last_seen: dict[tuple[str, int], float] = {}
-            active_days: dict[tuple[str, int], set[str]] = {}
+            counts: Counter[tuple[str, str, int]] = Counter()
+            resolved_addresses: dict[tuple[str, str, int], Counter[str]] = {}
+            last_seen: dict[tuple[str, str, int], float] = {}
+            active_days: dict[tuple[str, str, int], set[str]] = {}
             daily: Counter[str] = Counter()
             if profile:
                 profile_directory = self.directory / profile["id"]
@@ -832,18 +920,31 @@ class TargetHistoryStore:
                             if entry.get("vpn_id") != profile["id"]:
                                 continue
                             address = str(entry["address"])
+                            domain = (
+                                str(entry.get("domain") or "")
+                                .strip()
+                                .lower()
+                                .rstrip(".")
+                            )
                             port = int(entry["port"])
                             count = max(0, int(entry["count"]))
                             timestamp = float(entry["timestamp"])
                         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                             continue
-                        endpoint = (address, port)
+                        endpoint = (domain, "" if domain else address, port)
                         counts[endpoint] += count
+                        resolved_addresses.setdefault(endpoint, Counter())[address] += count
                         last_seen[endpoint] = max(last_seen.get(endpoint, 0), timestamp)
                         active_days.setdefault(endpoint, set()).add(day.isoformat())
                         daily[day.isoformat()] += count
         targets = []
-        for (address, port), count in counts.most_common(50):
+        for (domain, fallback_address, port), count in counts.most_common(50):
+            endpoint_key = (domain, fallback_address, port)
+            addresses = [
+                address
+                for address, _ in resolved_addresses[endpoint_key].most_common(4)
+            ]
+            address = addresses[0]
             try:
                 scope = "public" if ipaddress.ip_address(address).is_global else "private"
             except ValueError:
@@ -851,11 +952,13 @@ class TargetHistoryStore:
             targets.append(
                 {
                     "address": address,
+                    "addresses": addresses,
+                    "domain": domain or None,
                     "port": port,
-                    "endpoint": _format_endpoint(address, port),
+                    "endpoint": _format_endpoint(domain or address, port),
                     "connections": count,
-                    "last_seen": last_seen[(address, port)],
-                    "active_days": len(active_days[(address, port)]),
+                    "last_seen": last_seen[endpoint_key],
+                    "active_days": len(active_days[endpoint_key]),
                     "scope": scope,
                 }
             )
@@ -864,7 +967,9 @@ class TargetHistoryStore:
             "retention_days": retention_days,
             "period_start": cutoff.isoformat(),
             "total_connections": sum(counts.values()),
-            "unique_addresses": len({address for address, _ in counts}),
+            "unique_addresses": len(
+                {domain or fallback for domain, fallback, _ in counts}
+            ),
             "unique_endpoints": len(counts),
             "active_days": len([value for value in daily.values() if value]),
             "daily": [
@@ -898,6 +1003,9 @@ class ProcessManager:
         self._connection_statistics = _summarize_xray_connections([], [])
         self._statistics_xray_pid: int | None = None
         self._observed_outbound_inodes: set[str] = set()
+        self._pending_history_connections: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._pending_xray_targets: deque[dict[str, Any]] = deque(maxlen=2048)
+        self._socket_target_names: dict[str, dict[str, Any]] = {}
         self._statistics_wakeup = threading.Event()
         self._keepalive_wakeup = threading.Event()
         self._last_keepalive_at: float | None = None
@@ -915,6 +1023,10 @@ class ProcessManager:
         for line in process.stdout:
             with self.lock:
                 self._append(service, line)
+                if service.name == "xray":
+                    target = _parse_xray_access_target(line)
+                    if target:
+                        self._pending_xray_targets.append(target)
                 if service.name == "vpn" and (
                     VPN_CONNECTED.exists() or "Configured as " in line
                 ):
@@ -938,13 +1050,66 @@ class ProcessManager:
                     self._keepalive_wakeup.set()
                     self._schedule_vpn_reconnect()
 
+    def _read_xray_access_file(
+        self, path: Path, process: subprocess.Popen[str], position: int
+    ) -> None:
+        while process.poll() is None:
+            try:
+                if path.stat().st_size < position:
+                    position = 0
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    handle.seek(position)
+                    lines = handle.readlines()
+                    position = handle.tell()
+            except OSError:
+                lines = []
+            if lines:
+                with self.lock:
+                    for line in lines:
+                        target = _parse_xray_access_target(line)
+                        if target:
+                            self._pending_xray_targets.append(target)
+            time.sleep(0.2)
+
+    def _associate_xray_targets(
+        self, connections: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        cutoff = time.monotonic() - 10
+        while self._pending_xray_targets and self._pending_xray_targets[0]["observed_at"] < cutoff:
+            self._pending_xray_targets.popleft()
+
+        current_inodes = {connection["inode"] for connection in connections}
+        self._socket_target_names = {
+            inode: target
+            for inode, target in self._socket_target_names.items()
+            if inode in current_inodes
+        }
+        for connection in connections:
+            inode = connection["inode"]
+            if inode in self._socket_target_names:
+                continue
+            matched_index: int | None = None
+            for index, target in enumerate(self._pending_xray_targets):
+                if target["port"] != connection["remote_port"]:
+                    continue
+                if target["address"] and target["address"] != connection["remote_address"]:
+                    continue
+                matched_index = index
+                break
+            if matched_index is None:
+                continue
+            target = self._pending_xray_targets[matched_index]
+            del self._pending_xray_targets[matched_index]
+            self._socket_target_names[inode] = target
+        return dict(self._socket_target_names)
+
     def _spawn(
         self,
         name: str,
         command: list[str],
         stdin_text: str | None = None,
         env: dict[str, str] | None = None,
-    ) -> None:
+    ) -> subprocess.Popen[str]:
         service = self.services[name]
         if service.running:
             raise ConfigError(f"{name} 已在运行")
@@ -970,6 +1135,7 @@ class ProcessManager:
                 process.stdin.write("\n")
             process.stdin.flush()
             process.stdin.close()
+        return process
 
     def start_vpn(self, password: str = "", otp: str = "") -> None:
         with self.lock:
@@ -1079,7 +1245,6 @@ class ProcessManager:
                 vpn_running = vpn_service.running
             inbound_ports = _xray_inbound_ports()
             connections = _xray_tcp_connections(xray_pid)
-            summary = _summarize_xray_connections(connections, inbound_ports)
             outbound = [
                 connection
                 for connection in connections
@@ -1087,28 +1252,49 @@ class ProcessManager:
             ]
             current_inodes = {connection["inode"] for connection in outbound}
             connected = bool(vpn_running and VPN_CONNECTED.exists())
+            now = time.monotonic()
             with self.lock:
                 if xray_pid != self._statistics_xray_pid:
                     self._statistics_xray_pid = xray_pid
                     self._observed_outbound_inodes = set()
+                    self._pending_history_connections = {}
+                    self._socket_target_names = {}
+                target_names = self._associate_xray_targets(outbound)
+                summary = _summarize_xray_connections(
+                    connections, inbound_ports, target_names
+                )
                 new_inodes = current_inodes - self._observed_outbound_inodes if connected else set()
+                for connection in outbound:
+                    if connection["inode"] in new_inodes:
+                        self._pending_history_connections[connection["inode"]] = (
+                            now,
+                            connection,
+                        )
+                ready_history = []
+                for inode, (first_seen, connection) in list(
+                    self._pending_history_connections.items()
+                ):
+                    if inode not in target_names and now - first_seen < 1:
+                        continue
+                    ready_history.append((connection, target_names.get(inode, {})))
+                    del self._pending_history_connections[inode]
                 self._observed_outbound_inodes = current_inodes
                 self._connection_statistics = summary
 
-            if new_inodes:
+            if ready_history:
                 try:
                     config = normalize_vpn_route_config(read_json(VPN_CONFIG))
                     profile = _vpn_statistics_profile(config)
                 except ConfigError:
                     profile = None
                 if profile:
-                    for connection in outbound:
-                        if connection["inode"] in new_inodes:
-                            self._target_history.record(
-                                profile,
-                                connection["remote_address"],
-                                connection["remote_port"],
-                            )
+                    for connection, target in ready_history:
+                        self._target_history.record(
+                            profile,
+                            connection["remote_address"],
+                            connection["remote_port"],
+                            target.get("domain"),
+                        )
 
             if time.monotonic() >= next_flush_at:
                 try:
@@ -1186,9 +1372,25 @@ class ProcessManager:
             config = read_json(XRAY_CONFIG)
             validate_xray_shape(config)
             effective = effective_xray_config(config)
+            access_log = _xray_access_log_path(effective)
+            try:
+                access_position = access_log.stat().st_size if access_log else 0
+            except OSError:
+                access_position = 0
             atomic_write_json(RUNTIME_CONFIG, effective)
             self.validate_xray(effective)
-            self._spawn("xray", [XRAY_BINARY, "run", "-config", str(RUNTIME_CONFIG)])
+            self._pending_xray_targets.clear()
+            self._socket_target_names.clear()
+            self._pending_history_connections.clear()
+            process = self._spawn(
+                "xray", [XRAY_BINARY, "run", "-config", str(RUNTIME_CONFIG)]
+            )
+            if access_log:
+                threading.Thread(
+                    target=self._read_xray_access_file,
+                    args=(access_log, process, access_position),
+                    daemon=True,
+                ).start()
 
     def validate_xray(self, config: dict[str, Any]) -> str:
         validate_xray_shape(config)
