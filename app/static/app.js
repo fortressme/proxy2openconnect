@@ -6,7 +6,16 @@ let statusTimer = null;
 let logTimer = null;
 let targetHistoryTimer = null;
 let latestStatus = null;
+let latestTargetHistory = null;
 let trafficHistory = [];
+let historySearchTimer = null;
+const historyView = { query:"", route:"all", sort:"frequency", page:1, pageSize:20 };
+const historyCollator = new Intl.Collator(undefined, { numeric:true, sensitivity:"base" });
+const historyRouteSearchTerms = {
+  vpn:"vpn 隧道",
+  direct:"直连 direct",
+  unknown:"未识别 unknown",
+};
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -252,7 +261,41 @@ function renderTrafficChart() {
 }
 
 function renderTargetHistory(history) {
+  latestTargetHistory = history;
   const targets = Array.isArray(history.targets) ? history.targets : [];
+  const query = historyView.query.trim().toLocaleLowerCase();
+  const filteredTargets = targets.filter(target => {
+    if (historyView.route !== "all" && target.route !== historyView.route) return false;
+    if (!query) return true;
+    return [
+      target.endpoint,
+      target.domain,
+      target.address,
+      ...(Array.isArray(target.addresses) ? target.addresses : []),
+      target.port,
+      target.outbound_tag,
+      historyRouteSearchTerms[target.route] || historyRouteSearchTerms.unknown,
+    ].filter(Boolean).join(" ").toLocaleLowerCase().includes(query);
+  });
+  filteredTargets.sort((left, right) => {
+    if (historyView.sort === "recent") {
+      return (Number(right.last_seen) || 0) - (Number(left.last_seen) || 0)
+        || (Number(right.connections) || 0) - (Number(left.connections) || 0);
+    }
+    if (historyView.sort === "active-days") {
+      return (Number(right.active_days) || 0) - (Number(left.active_days) || 0)
+        || (Number(right.connections) || 0) - (Number(left.connections) || 0);
+    }
+    if (historyView.sort === "endpoint") {
+      return historyCollator.compare(left.endpoint || "", right.endpoint || "");
+    }
+    return (Number(right.connections) || 0) - (Number(left.connections) || 0)
+      || (Number(right.last_seen) || 0) - (Number(left.last_seen) || 0);
+  });
+  const pageCount = Math.max(1, Math.ceil(filteredTargets.length / historyView.pageSize));
+  historyView.page = Math.min(Math.max(1, historyView.page), pageCount);
+  const pageStart = (historyView.page - 1) * historyView.pageSize;
+  const visibleTargets = filteredTargets.slice(pageStart, pageStart + historyView.pageSize);
   const retentionDays = Number(history.retention_days) || 30;
   $("#history-range").textContent = `最近 ${retentionDays} 天`;
   $("#history-total").textContent = `${Number(history.total_connections) || 0} 次`;
@@ -263,16 +306,42 @@ function renderTargetHistory(history) {
     ? `绑定到 ${history.vpn.server} · VPN ${Number(history.vpn_connections) || 0} 次 · 直连 ${Number(history.direct_connections) || 0} 次 · 未识别 ${Number(history.unknown_connections) || 0} 次。`
     : "填写 VPN 服务器后，将按当前 VPN 配置独立累计目标连接。";
 
+  const filteredConnections = filteredTargets.reduce(
+    (total, target) => total + (Number(target.connections) || 0),
+    0,
+  );
+  const loadedRows = targets.length;
+  const totalRows = Number(history.total_target_rows) || loadedRows;
+  const visibleStart = filteredTargets.length ? pageStart + 1 : 0;
+  const visibleEnd = Math.min(pageStart + historyView.pageSize, filteredTargets.length);
+  $("#history-result-count").textContent = history.targets_truncated
+    ? `显示 ${visibleStart}–${visibleEnd} / 已载入 ${loadedRows} 项（共 ${totalRows} 项） · ${filteredConnections} 次访问`
+    : `显示 ${visibleStart}–${visibleEnd} / ${filteredTargets.length} 项 · ${filteredConnections} 次访问`;
+  $("#history-page-status").textContent = `${historyView.page} / ${pageCount}`;
+  $("#history-prev").disabled = historyView.page <= 1;
+  $("#history-next").disabled = historyView.page >= pageCount;
+  $("#history-pagination").classList.toggle("hidden", pageCount <= 1);
+  $("#history-reset").disabled = !(
+    historyView.query || historyView.route !== "all" || historyView.sort !== "frequency"
+  );
+  $$('[data-history-route]').forEach(button => {
+    const active = button.dataset.historyRoute === historyView.route;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+
   const list = $("#history-list");
-  if (!targets.length) {
+  if (!visibleTargets.length) {
     const empty = document.createElement("div");
     empty.className = "history-empty";
-    empty.textContent = "当前 VPN 暂无历史目标记录";
+    empty.textContent = targets.length
+      ? "没有符合当前筛选条件的目标记录"
+      : "当前 VPN 暂无历史目标记录";
     list.replaceChildren(empty);
     return;
   }
-  const maximum = Math.max(1, ...targets.map(target => Number(target.connections) || 0));
-  const rows = targets.map(target => {
+  const maximum = Math.max(1, ...filteredTargets.map(target => Number(target.connections) || 0));
+  const rows = visibleTargets.map(target => {
     const row = document.createElement("div");
     row.className = `history-row route-${target.route || "unknown"}`;
     const endpointCell = document.createElement("div");
@@ -305,9 +374,24 @@ function renderTargetHistory(history) {
 }
 
 async function loadTargetHistory() {
+  const panel = $(".history-panel");
+  panel.setAttribute("aria-busy", "true");
   try {
     renderTargetHistory(await api("/api/statistics/targets"));
-  } catch (_) {}
+  } catch (_) {
+    if (!latestTargetHistory) $("#history-result-count").textContent = "历史数据加载失败";
+  } finally {
+    panel.removeAttribute("aria-busy");
+  }
+}
+
+function refreshTargetHistoryView() {
+  if (latestTargetHistory) renderTargetHistory(latestTargetHistory);
+}
+
+function updateHistoryView(values) {
+  Object.assign(historyView, values, { page:1 });
+  refreshTargetHistoryView();
 }
 
 function updateOverviewStatistics(status) {
@@ -542,6 +626,32 @@ $("#logout-button").addEventListener("click", async () => { try { await api("/ap
 $$(".nav-item").forEach(item => item.addEventListener("click", () => switchPage(item.dataset.page)));
 $$(`[data-go]`).forEach(item => item.addEventListener("click", () => switchPage(item.dataset.go)));
 $("#menu-button").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
+$("#history-query").addEventListener("input", event => {
+  clearTimeout(historySearchTimer);
+  historySearchTimer = setTimeout(() => {
+    updateHistoryView({ query:event.target.value });
+  }, 160);
+});
+$$('[data-history-route]').forEach(button => button.addEventListener("click", () => {
+  updateHistoryView({ route:button.dataset.historyRoute });
+}));
+$("#history-sort").addEventListener("change", event => {
+  updateHistoryView({ sort:event.target.value });
+});
+$("#history-reset").addEventListener("click", () => {
+  clearTimeout(historySearchTimer);
+  $("#history-query").value = "";
+  $("#history-sort").value = "frequency";
+  updateHistoryView({ query:"", route:"all", sort:"frequency" });
+});
+$("#history-prev").addEventListener("click", () => {
+  historyView.page -= 1;
+  refreshTargetHistoryView();
+});
+$("#history-next").addEventListener("click", () => {
+  historyView.page += 1;
+  refreshTargetHistoryView();
+});
 $("#vpn-form").elements.route_mode.addEventListener("change", updateRouteModeFields);
 $("#vpn-form").elements.keepalive_enabled.addEventListener("change", updateKeepaliveFields);
 $("#vpn-form").elements.dns_mode.addEventListener("change", updateDnsModeFields);

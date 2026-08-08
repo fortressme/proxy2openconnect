@@ -45,6 +45,7 @@ VPN_ROUTE_MODES = frozenset({"all", "vpn", "manual"})
 VPN_DNS_MODES = frozenset({"system", "vpn", "manual"})
 MAX_MANUAL_ROUTES = 4096
 MAX_AUTO_RECONNECT_ATTEMPTS = 5
+MAX_HISTORY_TARGETS = 1000
 
 
 class ConfigError(ValueError):
@@ -113,7 +114,6 @@ def effective_xray_config(
     mark: int = XRAY_MARK,
     outbound_tags: frozenset[str] | set[str] | None = None,
 ) -> dict[str, Any]:
-    """Return a runtime copy where only selected outbounds are VPN-marked."""
     result = copy.deepcopy(config)
     outbounds = result.get("outbounds")
     if not isinstance(outbounds, list) or not outbounds:
@@ -219,7 +219,6 @@ def validate_keepalive_url(value: str) -> str:
 
 
 def resolve_vpn_gateway(server: str, disable_ipv6: bool = True) -> tuple[str, str] | None:
-    """Resolve a gateway before tunnel DNS is enabled so OpenConnect can pin the result."""
     parsed = urlparse(validate_server(server))
     host = parsed.hostname
     assert host is not None
@@ -358,7 +357,6 @@ def normalize_vpn_route_config(config: dict[str, Any]) -> dict[str, Any]:
 def perform_keepalive_request(
     url: str, mark: int = XRAY_MARK, timeout: float = 10, interface: str = "tun0"
 ) -> int:
-    """Send a small HTTP request on a marked socket bound to the VPN interface."""
     parsed = urlparse(validate_keepalive_url(url))
     host = parsed.hostname
     assert host is not None
@@ -848,7 +846,7 @@ def _summarize_xray_connections(
         )
 
     return {
-        # Retain legacy client fields for API compatibility.
+        # 保留公共状态 API 的旧字段。
         "active": sum(client_counts.values()),
         "unique_addresses": len(client_counts),
         "inbound_ports": inbound_ports,
@@ -908,8 +906,6 @@ def _vpn_statistics_profile(config: dict[str, Any]) -> dict[str, str] | None:
 
 
 class TargetHistoryStore:
-    """Persist aggregated target connection counts in one JSONL log per local day."""
-
     def __init__(self, directory: Path = STATISTICS_DIR) -> None:
         self.directory = directory
         self.lock = threading.RLock()
@@ -1073,7 +1069,7 @@ class TargetHistoryStore:
             domain,
             fallback_address,
             port,
-        ), count in counts.most_common(50):
+        ), count in counts.most_common(MAX_HISTORY_TARGETS):
             endpoint_key = (route, outbound_tag, domain, fallback_address, port)
             addresses = [
                 address
@@ -1120,6 +1116,8 @@ class TargetHistoryStore:
                 for (route, _, _, _, _), count in counts.items()
                 if route == "unknown"
             ),
+            "total_target_rows": len(counts),
+            "targets_truncated": len(counts) > MAX_HISTORY_TARGETS,
             "unique_addresses": len(
                 {domain or fallback for _, _, domain, fallback, _ in counts}
             ),
@@ -1203,7 +1201,7 @@ class ProcessManager:
                 if service.name == "vpn":
                     if VPN_CONNECTED.exists():
                         self._vpn_ever_connected = True
-                        # Never replay a single-use OTP.
+                        # 一次性验证码不可用于重连。
                         self._vpn_otp = ""
                         self._vpn_reconnect_attempts = 0
                     self.ensure_direct_fallback()
@@ -1321,7 +1319,7 @@ class ProcessManager:
             self._keepalive_wakeup.set()
 
     def _start_vpn_attempt(self, config: dict[str, Any], secret: str, otp: str = "") -> None:
-        # Restore pre-tunnel DNS before resolving the public gateway.
+        # 解析 VPN 网关前先恢复连接前 DNS。
         self.ensure_direct_fallback()
         command = build_openconnect_command(config)
         gateway = resolve_vpn_gateway(

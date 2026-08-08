@@ -32,7 +32,7 @@ from .core import (
 
 
 STATIC_DIR = Path(__file__).parent / "static"
-APP_VERSION = os.getenv("APP_VERSION", "dev")
+APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 SESSION_SECRET = os.environ["SESSION_SECRET"].encode()

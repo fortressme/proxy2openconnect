@@ -17,7 +17,6 @@ ROUTE_MODES = frozenset({"all", "vpn", "manual"})
 
 
 def collect_split_routes(env: Mapping[str, str]) -> tuple[list[tuple[int, str, str]], list[str]]:
-    """Normalize OpenConnect split-route environment variables."""
     routes: list[tuple[int, str, str]] = []
     warnings: list[str] = []
 

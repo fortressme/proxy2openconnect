@@ -7,8 +7,7 @@ PRIORITY="${XRAY_VPN_RULE_PRIORITY:-100}"
 DNS_PRIORITY="${XRAY_VPN_DNS_RULE_PRIORITY:-99}"
 DNS_ROUTES_FILE=/run/proxy2openconnect/dns-routes
 
-# Remove only this application's policy rules. With no matching rule, marked
-# sockets use the normal routing table instead of being blocked.
+# 仅移除应用规则，使带标记套接字回落主路由表。
 if [ -f "$DNS_ROUTES_FILE" ]; then
   while IFS=' ' read -r family network; do
     [ -n "$network" ] || continue

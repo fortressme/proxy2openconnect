@@ -140,6 +140,33 @@
             <div><span>目标端点</span><strong id="history-endpoints">0 个</strong></div>
             <div><span>有活动天数</span><strong id="history-active-days">0 天</strong></div>
           </div>
+          <div class="history-tools" aria-label="历史记录筛选与排序">
+            <label class="history-search"><span>搜索目标</span><input id="history-query" type="search" placeholder="域名、IP、端口或 outbound" autocomplete="off"></label>
+            <fieldset class="history-route-filter">
+              <legend>实际路径</legend>
+              <div>
+                <button type="button" class="history-filter-button active" data-history-route="all" aria-pressed="true">全部</button>
+                <button type="button" class="history-filter-button" data-history-route="vpn" aria-pressed="false">VPN</button>
+                <button type="button" class="history-filter-button" data-history-route="direct" aria-pressed="false">直连</button>
+                <button type="button" class="history-filter-button" data-history-route="unknown" aria-pressed="false">未识别</button>
+              </div>
+            </fieldset>
+            <label class="history-sort"><span>排序方式</span><select id="history-sort">
+              <option value="frequency">访问频次</option>
+              <option value="recent">最近访问</option>
+              <option value="active-days">活跃天数</option>
+              <option value="endpoint">目标名称</option>
+            </select></label>
+            <button id="history-reset" type="button" class="history-reset" disabled>重置</button>
+          </div>
+          <div class="history-results-bar">
+            <span id="history-result-count" aria-live="polite">等待历史数据</span>
+            <nav id="history-pagination" class="history-pagination hidden" aria-label="历史记录分页">
+              <button id="history-prev" type="button">上一页</button>
+              <span id="history-page-status">1 / 1</span>
+              <button id="history-next" type="button">下一页</button>
+            </nav>
+          </div>
           <div class="history-table-head" aria-hidden="true"><span>目标端点</span><span>活跃天数</span><span>最近访问</span><span>访问次数</span></div>
           <div id="history-list" class="history-list" aria-live="polite">
             <div class="history-empty">当前 VPN 暂无历史目标记录</div>
