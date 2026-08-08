@@ -8,6 +8,8 @@ import os
 import re
 import shlex
 import shutil
+import socket
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -37,6 +39,7 @@ OPENCONNECT_BINARY = os.getenv("OPENCONNECT_BINARY", "/usr/sbin/openconnect")
 VPN_SCRIPT = "/opt/proxy2openconnect/scripts/vpn-script.sh"
 VPN_ROUTE_MODES = frozenset({"all", "vpn", "manual"})
 MAX_MANUAL_ROUTES = 4096
+MAX_AUTO_RECONNECT_ATTEMPTS = 10
 
 
 class ConfigError(ValueError):
@@ -141,6 +144,25 @@ def validate_server(server: str) -> str:
     return candidate
 
 
+def validate_keepalive_url(value: str) -> str:
+    """Validate a user-configured HTTP(S) target used to generate tunnel traffic."""
+    candidate = value.strip()
+    if not candidate:
+        raise ConfigError("启用网址保活时必须填写保活网址")
+    if any(character.isspace() for character in candidate):
+        raise ConfigError("保活网址不能包含空白字符")
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConfigError("保活网址必须是有效的 HTTP 或 HTTPS 地址")
+    if parsed.username or parsed.password:
+        raise ConfigError("请勿在保活网址中包含用户名或密码")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ConfigError("保活网址端口无效") from exc
+    return candidate
+
+
 def _normalize_network_list(value: Any, label: str) -> list[str]:
     if value is None:
         items: list[Any] = []
@@ -183,7 +205,96 @@ def normalize_vpn_route_config(config: dict[str, Any]) -> dict[str, Any]:
     )
     if mode == "manual" and not result["manual_routes"]:
         raise ConfigError("手动路由模式至少需要一个包含网段")
+
+    result["auto_reconnect"] = bool(result.get("auto_reconnect", True))
+    try:
+        reconnect_interval = int(result.get("auto_reconnect_interval", 10))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("自动重连间隔必须是整数") from exc
+    if reconnect_interval < 1 or reconnect_interval > 3600:
+        raise ConfigError("自动重连间隔必须在 1 到 3600 秒之间")
+    result["auto_reconnect_interval"] = reconnect_interval
+
+    result["keepalive_enabled"] = bool(result.get("keepalive_enabled", False))
+    keepalive_url = str(result.get("keepalive_url", "")).strip()
+    if result["keepalive_enabled"]:
+        keepalive_url = validate_keepalive_url(keepalive_url)
+    result["keepalive_url"] = keepalive_url
+    try:
+        keepalive_interval = int(result.get("keepalive_interval", 300))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("保活间隔必须是整数") from exc
+    if keepalive_interval < 10 or keepalive_interval > 86400:
+        raise ConfigError("保活间隔必须在 10 到 86400 秒之间")
+    result["keepalive_interval"] = keepalive_interval
     return result
+
+
+def perform_keepalive_request(
+    url: str, mark: int = XRAY_MARK, timeout: float = 10, interface: str = "tun0"
+) -> int:
+    """Send a small HTTP request on a marked socket bound to the VPN interface."""
+    parsed = urlparse(validate_keepalive_url(url))
+    host = parsed.hostname
+    assert host is not None
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    target = parsed.path or "/"
+    if parsed.query:
+        target += f"?{parsed.query}"
+    try:
+        request_target = target.encode("ascii")
+        address_host = host.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise ConfigError("保活网址路径必须使用 URL 编码") from exc
+    host_header = f"[{address_host}]" if ":" in address_host else address_host
+    if parsed.port:
+        host_header += f":{port}"
+
+    last_error: OSError | None = None
+    for family, socktype, proto, _, sockaddr in socket.getaddrinfo(
+        address_host, port, type=socket.SOCK_STREAM
+    ):
+        raw_socket = socket.socket(family, socktype, proto)
+        try:
+            raw_socket.settimeout(timeout)
+            raw_socket.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_MARK", 36), mark)
+            raw_socket.setsockopt(
+                socket.SOL_SOCKET,
+                getattr(socket, "SO_BINDTODEVICE", 25),
+                interface.encode("ascii") + b"\0",
+            )
+            raw_socket.connect(sockaddr)
+            connection: socket.socket
+            if parsed.scheme == "https":
+                connection = ssl.create_default_context().wrap_socket(
+                    raw_socket, server_hostname=address_host
+                )
+            else:
+                connection = raw_socket
+            try:
+                request = (
+                    b"GET " + request_target + b" HTTP/1.1\r\n"
+                    + f"Host: {host_header}\r\n".encode("ascii")
+                    + b"User-Agent: proxy2openconnect-keepalive\r\n"
+                    + b"Range: bytes=0-0\r\nConnection: close\r\n\r\n"
+                )
+                connection.sendall(request)
+                response_line = b""
+                while b"\n" not in response_line and len(response_line) < 4096:
+                    chunk = connection.recv(1)
+                    if not chunk:
+                        break
+                    response_line += chunk
+            finally:
+                connection.close()
+            match = re.match(rb"HTTP/\d(?:\.\d)?\s+(\d{3})", response_line)
+            if not match:
+                raise OSError("保活网址返回了无效的 HTTP 响应")
+            return int(match.group(1))
+        except OSError as exc:
+            last_error = exc
+            raw_socket.close()
+    raise OSError(f"无法连接保活网址: {last_error or '没有可用地址'}")
 
 
 def vpn_route_environment(config: dict[str, Any]) -> dict[str, str]:
@@ -294,6 +405,19 @@ class ProcessManager:
             "vpn": ServiceProcess("vpn"),
             "xray": ServiceProcess("xray"),
         }
+        self._vpn_requested = False
+        self._vpn_password = ""
+        self._vpn_otp = ""
+        self._vpn_requires_otp = False
+        self._vpn_ever_connected = False
+        self._vpn_reconnect_attempts = 0
+        self._vpn_cancel_event = threading.Event()
+        self._vpn_reconnect_pending = False
+        self._keepalive_wakeup = threading.Event()
+        self._last_keepalive_at: float | None = None
+        self._last_keepalive_ok: bool | None = None
+        self._last_keepalive_error: str | None = None
+        threading.Thread(target=self._keepalive_loop, daemon=True).start()
 
     def _append(self, service: ServiceProcess, line: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -304,6 +428,12 @@ class ProcessManager:
         for line in process.stdout:
             with self.lock:
                 self._append(service, line)
+                if service.name == "vpn" and (
+                    VPN_CONNECTED.exists() or "Configured as " in line
+                ):
+                    self._vpn_ever_connected = True
+                    self._vpn_otp = ""
+                    self._vpn_reconnect_attempts = 0
         code = process.wait()
         with self.lock:
             is_current = service.process is process
@@ -311,7 +441,14 @@ class ProcessManager:
                 service.last_exit_code = code
                 self._append(service, f"进程已退出，代码 {code}")
                 if service.name == "vpn":
+                    if VPN_CONNECTED.exists():
+                        self._vpn_ever_connected = True
+                        # An OTP is normally single-use and must never be replayed.
+                        self._vpn_otp = ""
+                        self._vpn_reconnect_attempts = 0
                     self.ensure_direct_fallback()
+                    self._keepalive_wakeup.set()
+                    self._schedule_vpn_reconnect()
 
     def _spawn(
         self,
@@ -351,11 +488,123 @@ class ProcessManager:
             secret = password or str(config.get("password", ""))
             if not secret:
                 raise ConfigError("请输入 VPN 密码")
-            command = build_openconnect_command(config)
-            stdin_text = secret + (f"\n{otp}" if otp else "")
-            process_env = os.environ.copy()
-            process_env.update(vpn_route_environment(config))
-            self._spawn("vpn", command, stdin_text, process_env)
+            if self.services["vpn"].running:
+                raise ConfigError("vpn 已在运行")
+            self._vpn_cancel_event.set()
+            self._vpn_cancel_event = threading.Event()
+            self._vpn_requested = True
+            self._vpn_password = secret
+            self._vpn_otp = otp
+            self._vpn_requires_otp = bool(otp)
+            self._vpn_ever_connected = False
+            self._vpn_reconnect_attempts = 0
+            self._vpn_reconnect_pending = False
+            self._start_vpn_attempt(config, secret, otp)
+            self._keepalive_wakeup.set()
+
+    def _start_vpn_attempt(self, config: dict[str, Any], secret: str, otp: str = "") -> None:
+        command = build_openconnect_command(config)
+        stdin_text = secret + (f"\n{otp}" if otp else "")
+        process_env = os.environ.copy()
+        process_env.update(vpn_route_environment(config))
+        self._spawn("vpn", command, stdin_text, process_env)
+
+    def _schedule_vpn_reconnect(self) -> None:
+        if not self._vpn_requested or self._vpn_reconnect_pending:
+            return
+        try:
+            config = normalize_vpn_route_config(read_json(VPN_CONFIG))
+        except ConfigError as exc:
+            self._append(self.services["vpn"], f"自动重连已停止: {exc}")
+            return
+        if not config["auto_reconnect"] or not self._vpn_ever_connected:
+            return
+        if self._vpn_requires_otp:
+            self._append(self.services["vpn"], "会话需要新的 OTP，已跳过自动重连")
+            return
+        if self._vpn_reconnect_attempts >= MAX_AUTO_RECONNECT_ATTEMPTS:
+            self._append(
+                self.services["vpn"],
+                f"自动重连连续失败 {MAX_AUTO_RECONNECT_ATTEMPTS} 次，已停止重试",
+            )
+            return
+        interval = config["auto_reconnect_interval"]
+        cancel_event = self._vpn_cancel_event
+        self._vpn_reconnect_pending = True
+        self._append(self.services["vpn"], f"将在 {interval} 秒后自动重连")
+
+        def reconnect() -> None:
+            if cancel_event.wait(interval):
+                return
+            with self.lock:
+                self._vpn_reconnect_pending = False
+                if cancel_event is not self._vpn_cancel_event or not self._vpn_requested:
+                    return
+                if self.services["vpn"].running:
+                    return
+                try:
+                    current = normalize_vpn_route_config(read_json(VPN_CONFIG))
+                    if not current["auto_reconnect"]:
+                        self._append(self.services["vpn"], "自动重连已在配置中关闭")
+                        return
+                    self._vpn_reconnect_attempts += 1
+                    self._append(
+                        self.services["vpn"],
+                        f"正在自动重连（{self._vpn_reconnect_attempts}/{MAX_AUTO_RECONNECT_ATTEMPTS}）…",
+                    )
+                    self._start_vpn_attempt(current, self._vpn_password, self._vpn_otp)
+                except Exception as exc:
+                    self._append(self.services["vpn"], f"自动重连启动失败: {exc}")
+                    self._schedule_vpn_reconnect()
+
+        threading.Thread(target=reconnect, daemon=True).start()
+
+    def notify_vpn_config_changed(self) -> None:
+        self._keepalive_wakeup.set()
+
+    def _keepalive_loop(self) -> None:
+        signature: tuple[str, int] | None = None
+        next_request_at: float | None = None
+        while True:
+            try:
+                config = normalize_vpn_route_config(read_json(VPN_CONFIG))
+                enabled = config["keepalive_enabled"]
+                current_signature = (config["keepalive_url"], config["keepalive_interval"])
+            except ConfigError:
+                enabled = False
+                current_signature = ("", 300)
+
+            connected = self.services["vpn"].running and VPN_CONNECTED.exists()
+            now = time.monotonic()
+            if not enabled or not connected:
+                signature = None
+                next_request_at = None
+                self._keepalive_wakeup.wait(5)
+                self._keepalive_wakeup.clear()
+                continue
+            if signature != current_signature or next_request_at is None:
+                signature = current_signature
+                next_request_at = now + current_signature[1]
+            remaining = max(0.0, next_request_at - now)
+            if self._keepalive_wakeup.wait(remaining):
+                self._keepalive_wakeup.clear()
+                continue
+
+            url, interval = current_signature
+            try:
+                status = perform_keepalive_request(url)
+                with self.lock:
+                    self._last_keepalive_at = time.time()
+                    self._last_keepalive_ok = True
+                    self._last_keepalive_error = None
+                    self._append(self.services["vpn"], f"网址保活成功（HTTP {status}）")
+            except Exception as exc:
+                with self.lock:
+                    self._last_keepalive_at = time.time()
+                    self._last_keepalive_ok = False
+                    self._last_keepalive_error = str(exc)
+                    self._append(self.services["vpn"], f"网址保活失败: {exc}")
+            next_request_at = time.monotonic() + interval
 
     def start_xray(self) -> None:
         with self.lock:
@@ -390,8 +639,19 @@ class ProcessManager:
     def stop(self, name: str) -> None:
         with self.lock:
             service = self.services[name]
+            if name == "vpn":
+                self._vpn_requested = False
+                self._vpn_password = ""
+                self._vpn_otp = ""
+                self._vpn_requires_otp = False
+                self._vpn_reconnect_attempts = 0
+                self._vpn_reconnect_pending = False
+                self._vpn_cancel_event.set()
+                self._keepalive_wakeup.set()
             process = service.process
             if not process or process.poll() is not None:
+                if name == "vpn":
+                    self.ensure_direct_fallback()
                 return
             self._append(service, "正在停止…")
             process.terminate()
@@ -456,6 +716,12 @@ class ProcessManager:
                     "started_at": service.started_at,
                     "last_exit_code": service.last_exit_code,
                 }
+            services["vpn"]["reconnect_pending"] = self._vpn_reconnect_pending
+            keepalive = {
+                "last_at": self._last_keepalive_at,
+                "ok": self._last_keepalive_ok,
+                "error": self._last_keepalive_error,
+            }
         vpn_ip = None
         if VPN_CONNECTED.exists():
             vpn_ip = VPN_CONNECTED.read_text(encoding="utf-8").strip()
@@ -474,6 +740,7 @@ class ProcessManager:
             "route_table": ROUTE_TABLE,
             "mark": XRAY_MARK,
             "certificate_candidate": self.certificate_candidate(),
+            "keepalive": keepalive,
         }
 
 

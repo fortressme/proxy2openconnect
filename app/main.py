@@ -254,6 +254,7 @@ def put_vpn_config(body: VpnConfigBody, _: str = Depends(require_user)):
     config = normalize_vpn_route_config(config)
     build_openconnect_command(config)
     atomic_write_json(VPN_CONFIG, config)
+    manager.notify_vpn_config_changed()
     return {"ok": True}
 
 

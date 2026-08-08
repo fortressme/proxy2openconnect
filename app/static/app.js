@@ -61,23 +61,24 @@ async function refreshStatus() {
     latestStatus = status;
     const xray = status.services.xray.running;
     const vpnProcess = status.services.vpn.running;
+    const reconnectPending = Boolean(status.services.vpn.reconnect_pending);
     const connected = status.vpn_connected;
     const vpnRouteCount = (status.vpn_routes || []).filter(route => route.includes(" include ")).length;
     setDot("#top-vpn-dot", connected, vpnProcess);
     setDot("#vpn-page-dot", connected, vpnProcess);
-    $("#top-vpn-text").textContent = connected ? "VPN 已连接" : vpnProcess ? "VPN 连接中" : "VPN 未连接";
-    $("#vpn-page-state").textContent = connected ? "已连接" : vpnProcess ? "连接中" : "未连接";
+    $("#top-vpn-text").textContent = connected ? "VPN 已连接" : vpnProcess ? "VPN 连接中" : reconnectPending ? "VPN 等待重连" : "VPN 未连接";
+    $("#vpn-page-state").textContent = connected ? "已连接" : vpnProcess ? "连接中" : reconnectPending ? "等待重连" : "未连接";
     $("#route-vpn-ip").textContent = connected ? (status.vpn_ip || "隧道在线") : "等待连接";
-    $("#vpn-state").textContent = connected ? "Connected" : vpnProcess ? "Connecting" : "Disconnected";
-    $("#vpn-detail").textContent = connected ? `隧道地址 ${status.vpn_ip} · ${vpnRouteCount} 条生效路由` : "企业 VPN 隧道";
-    $("#vpn-badge").textContent = connected ? "已连接" : vpnProcess ? "连接中" : "未连接";
+    $("#vpn-state").textContent = connected ? "Connected" : vpnProcess ? "Connecting" : reconnectPending ? "Reconnecting" : "Disconnected";
+    $("#vpn-detail").textContent = connected ? `隧道地址 ${status.vpn_ip} · ${vpnRouteCount} 条生效路由` : reconnectPending ? "短暂中断，等待自动重连" : "企业 VPN 隧道";
+    $("#vpn-badge").textContent = connected ? "已连接" : vpnProcess ? "连接中" : reconnectPending ? "等待重连" : "未连接";
     $("#vpn-badge").classList.toggle("success", connected);
     $("#xray-state").textContent = xray ? "Online" : "Offline";
     $("#xray-badge").textContent = xray ? "运行中" : "已停止";
     $("#xray-badge").classList.toggle("success", xray);
     $("#overview-xray-action").textContent = xray ? "停止 Xray" : "启动 Xray";
     $("#vpn-connect").disabled = vpnProcess;
-    $("#vpn-disconnect").disabled = !vpnProcess;
+    $("#vpn-disconnect").disabled = !vpnProcess && !reconnectPending;
     const candidate = status.certificate_candidate;
     $("#certificate-trust-card").classList.toggle("hidden", !candidate);
     if (candidate) {
@@ -93,10 +94,10 @@ async function loadVpnConfig() {
   const result = await api("/api/vpn/config");
   const form = $("#vpn-form");
   const config = result.config;
-  for (const key of ["server","username","authgroup","servercert","useragent","certificate","sslkey","cafile","reconnect_timeout"]) {
+  for (const key of ["server","username","authgroup","servercert","useragent","certificate","sslkey","cafile","reconnect_timeout","auto_reconnect_interval","keepalive_url","keepalive_interval"]) {
     if (form.elements[key]) form.elements[key].value = config[key] ?? "";
   }
-  for (const key of ["no_dtls","disable_ipv6","autostart"]) form.elements[key].checked = Boolean(config[key]);
+  for (const key of ["no_dtls","disable_ipv6","auto_reconnect","keepalive_enabled","autostart"]) form.elements[key].checked = Boolean(config[key]);
   form.elements.route_mode.value = config.route_mode || "all";
   form.elements.manual_routes.value = (config.manual_routes || []).join("\n");
   form.elements.manual_exclude_routes.value = (config.manual_exclude_routes || []).join("\n");
@@ -141,6 +142,11 @@ function formToVpnConfig() {
     manual_routes: form.elements.manual_routes.value.split("\n").map(v => v.trim()).filter(Boolean),
     manual_exclude_routes: form.elements.manual_exclude_routes.value.split("\n").map(v => v.trim()).filter(Boolean),
     reconnect_timeout: Number(form.elements.reconnect_timeout.value || 300),
+    auto_reconnect: form.elements.auto_reconnect.checked,
+    auto_reconnect_interval: Number(form.elements.auto_reconnect_interval.value || 10),
+    keepalive_enabled: form.elements.keepalive_enabled.checked,
+    keepalive_url: form.elements.keepalive_url.value.trim(),
+    keepalive_interval: Number(form.elements.keepalive_interval.value || 300),
     extra_args: form.elements.extra_args.value.split("\n").map(v => v.trim()).filter(Boolean),
     autostart: form.elements.autostart.checked,
   };

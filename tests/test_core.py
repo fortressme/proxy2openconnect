@@ -1,15 +1,28 @@
 import copy
+import socket
 import unittest
+from unittest.mock import Mock, patch
 
 from app.core import (
     ConfigError,
+    ProcessManager,
     build_openconnect_command,
     effective_xray_config,
     extract_certificate_candidate,
     normalize_vpn_route_config,
+    perform_keepalive_request,
+    validate_keepalive_url,
     validate_server,
     vpn_route_environment,
 )
+
+
+class ImmediateThread:
+    def __init__(self, target, **_):
+        self.target = target
+
+    def start(self):
+        self.target()
 
 
 class EffectiveXrayConfigTests(unittest.TestCase):
@@ -142,6 +155,106 @@ class VpnRouteConfigTests(unittest.TestCase):
     def test_rejects_invalid_manual_network(self):
         with self.assertRaises(ConfigError):
             normalize_vpn_route_config({"route_mode": "manual", "manual_routes": ["invalid"]})
+
+    def test_adds_reconnect_and_keepalive_defaults(self):
+        config = normalize_vpn_route_config({})
+
+        self.assertTrue(config["auto_reconnect"])
+        self.assertEqual(config["auto_reconnect_interval"], 10)
+        self.assertFalse(config["keepalive_enabled"])
+        self.assertEqual(config["keepalive_interval"], 300)
+
+    def test_validates_enabled_keepalive(self):
+        config = normalize_vpn_route_config(
+            {
+                "keepalive_enabled": True,
+                "keepalive_url": "https://intranet.example.test/ping",
+                "keepalive_interval": 60,
+            }
+        )
+
+        self.assertEqual(config["keepalive_url"], "https://intranet.example.test/ping")
+        self.assertEqual(config["keepalive_interval"], 60)
+
+    def test_requires_url_when_keepalive_enabled(self):
+        with self.assertRaises(ConfigError):
+            normalize_vpn_route_config({"keepalive_enabled": True, "keepalive_url": ""})
+
+    def test_rejects_out_of_range_intervals(self):
+        with self.assertRaises(ConfigError):
+            normalize_vpn_route_config({"auto_reconnect_interval": 0})
+        with self.assertRaises(ConfigError):
+            normalize_vpn_route_config({"keepalive_interval": 9})
+
+
+class KeepaliveUrlTests(unittest.TestCase):
+    def test_accepts_http_and_https(self):
+        self.assertEqual(validate_keepalive_url("http://10.0.0.1/ping"), "http://10.0.0.1/ping")
+        self.assertEqual(validate_keepalive_url("https://host.test/health"), "https://host.test/health")
+
+    def test_rejects_credentials_and_unsupported_schemes(self):
+        with self.assertRaises(ConfigError):
+            validate_keepalive_url("https://user:secret@host.test/ping")
+        with self.assertRaises(ConfigError):
+            validate_keepalive_url("file:///etc/passwd")
+
+    def test_request_is_marked_and_bound_to_tunnel(self):
+        raw_socket = Mock()
+        raw_socket.recv.return_value = b"HTTP/1.1 204 No Content\r\n"
+        address = ("203.0.113.10", 80)
+
+        with (
+            patch("app.core.socket.getaddrinfo", return_value=[(2, 1, 6, "", address)]),
+            patch("app.core.socket.socket", return_value=raw_socket),
+        ):
+            status = perform_keepalive_request("http://intranet.example.test/ping", mark=255)
+
+        self.assertEqual(status, 204)
+        raw_socket.setsockopt.assert_any_call(
+            socket.SOL_SOCKET,
+            getattr(socket, "SO_MARK", 36),
+            255,
+        )
+        raw_socket.setsockopt.assert_any_call(
+            socket.SOL_SOCKET,
+            getattr(socket, "SO_BINDTODEVICE", 25),
+            b"tun0\0",
+        )
+
+
+class AutoReconnectTests(unittest.TestCase):
+    def test_reconnects_with_cached_password_after_successful_session(self):
+        manager = ProcessManager()
+        manager._vpn_requested = True
+        manager._vpn_password = "secret"
+        manager._vpn_ever_connected = True
+        manager._vpn_cancel_event = Mock()
+        manager._vpn_cancel_event.wait.return_value = False
+        config = {"auto_reconnect": True, "auto_reconnect_interval": 10}
+
+        with (
+            patch("app.core.read_json", return_value=config),
+            patch("app.core.threading.Thread", ImmediateThread),
+            patch.object(manager, "_start_vpn_attempt") as start,
+        ):
+            manager._schedule_vpn_reconnect()
+
+        start.assert_called_once()
+        self.assertEqual(manager._vpn_reconnect_attempts, 1)
+        self.assertFalse(manager._vpn_reconnect_pending)
+
+    def test_does_not_replay_otp(self):
+        manager = ProcessManager()
+        manager._vpn_requested = True
+        manager._vpn_ever_connected = True
+        manager._vpn_requires_otp = True
+        config = {"auto_reconnect": True, "auto_reconnect_interval": 10}
+
+        with patch("app.core.read_json", return_value=config):
+            manager._schedule_vpn_reconnect()
+
+        self.assertFalse(manager._vpn_reconnect_pending)
+        self.assertIn("会话需要新的 OTP", manager.logs("vpn")[-1])
 
 
 class CertificateCandidateTests(unittest.TestCase):

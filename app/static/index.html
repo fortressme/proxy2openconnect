@@ -86,6 +86,9 @@
               <label class="wide">服务器证书指纹<input name="servercert" placeholder="sha256:...（可选）"></label>
               <label class="wide">User-Agent<input name="useragent"></label>
               <label>重连窗口（秒）<input name="reconnect_timeout" type="number" min="0" max="86400" value="300"></label>
+              <label>自动重连间隔（秒）<input name="auto_reconnect_interval" type="number" min="1" max="3600" value="10"></label>
+              <label class="wide">保活网址<input name="keepalive_url" type="url" placeholder="https://内部服务.example.com/ping"></label>
+              <label>保活间隔（秒）<input name="keepalive_interval" type="number" min="10" max="86400" value="300"></label>
               <label class="wide">路由模式
                 <select name="route_mode">
                   <option value="all">接管全部（默认）</option>
@@ -104,12 +107,12 @@
               <label>私钥路径<input name="sslkey" placeholder="/data/certs/client.key"></label>
               <label class="wide">额外参数<textarea name="extra_args" rows="3" placeholder="每行一个参数，例如 --os=linux-64"></textarea></label>
             </div>
-            <div class="check-row"><label><input type="checkbox" name="no_dtls"> 禁用 DTLS</label><label><input type="checkbox" name="disable_ipv6" checked> 禁用 IPv6</label><label><input type="checkbox" name="autostart"> 容器启动时自动连接</label></div>
+            <div class="check-row"><label><input type="checkbox" name="no_dtls"> 禁用 DTLS</label><label><input type="checkbox" name="disable_ipv6" checked> 禁用 IPv6</label><label><input type="checkbox" name="auto_reconnect" checked> 会话退出后自动重连</label><label><input type="checkbox" name="keepalive_enabled"> 启用网址保活</label><label><input type="checkbox" name="autostart"> 容器启动时自动连接</label></div>
             <div class="form-actions"><button class="button primary" type="submit">保存 VPN 配置</button></div>
           </form>
 
           <div class="panel connect-panel">
-            <div><p class="eyebrow">SESSION AUTHENTICATION</p><h3>建立隧道</h3><p class="muted">临时凭据只会通过标准输入交给 OpenConnect，不会出现在命令行中。</p></div>
+            <div><p class="eyebrow">SESSION AUTHENTICATION</p><h3>建立隧道</h3><p class="muted">临时凭据只会通过标准输入交给 OpenConnect，不会出现在命令行中。自动重连会在当前容器进程的内存中保留密码；一次性验证码不会重复使用。</p></div>
             <label>VPN 密码<input id="connect-password" type="password" autocomplete="current-password" placeholder="留空则使用已保存密码"></label>
             <label>一次性验证码 / MFA<input id="connect-otp" inputmode="numeric" autocomplete="one-time-code" placeholder="可选"></label>
             <label class="save-secret"><input id="save-password" type="checkbox"> 将本次密码保存到数据卷</label>

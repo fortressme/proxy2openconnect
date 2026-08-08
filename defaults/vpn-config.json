@@ -14,6 +14,11 @@
   "manual_routes": [],
   "manual_exclude_routes": [],
   "reconnect_timeout": 300,
+  "auto_reconnect": true,
+  "auto_reconnect_interval": 10,
+  "keepalive_enabled": false,
+  "keepalive_url": "",
+  "keepalive_interval": 300,
   "extra_args": [
     "--os=win",
     "--version-string=4.10.08029"
