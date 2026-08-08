@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from app.core import (
     ConfigError,
+    MAX_AUTO_RECONNECT_ATTEMPTS,
     ProcessManager,
     build_openconnect_command,
     effective_xray_config,
@@ -192,6 +193,12 @@ class KeepaliveUrlTests(unittest.TestCase):
         self.assertEqual(validate_keepalive_url("http://10.0.0.1/ping"), "http://10.0.0.1/ping")
         self.assertEqual(validate_keepalive_url("https://host.test/health"), "https://host.test/health")
 
+    def test_adds_https_to_address_without_scheme(self):
+        self.assertEqual(
+            validate_keepalive_url("intranet.example.test/ping"),
+            "https://intranet.example.test/ping",
+        )
+
     def test_rejects_credentials_and_unsupported_schemes(self):
         with self.assertRaises(ConfigError):
             validate_keepalive_url("https://user:secret@host.test/ping")
@@ -223,6 +230,9 @@ class KeepaliveUrlTests(unittest.TestCase):
 
 
 class AutoReconnectTests(unittest.TestCase):
+    def test_stops_after_five_attempts(self):
+        self.assertEqual(MAX_AUTO_RECONNECT_ATTEMPTS, 5)
+
     def test_reconnects_with_cached_password_after_successful_session(self):
         manager = ProcessManager()
         manager._vpn_requested = True

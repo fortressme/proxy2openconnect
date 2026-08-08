@@ -39,7 +39,7 @@ OPENCONNECT_BINARY = os.getenv("OPENCONNECT_BINARY", "/usr/sbin/openconnect")
 VPN_SCRIPT = "/opt/proxy2openconnect/scripts/vpn-script.sh"
 VPN_ROUTE_MODES = frozenset({"all", "vpn", "manual"})
 MAX_MANUAL_ROUTES = 4096
-MAX_AUTO_RECONNECT_ATTEMPTS = 10
+MAX_AUTO_RECONNECT_ATTEMPTS = 5
 
 
 class ConfigError(ValueError):
@@ -151,6 +151,8 @@ def validate_keepalive_url(value: str) -> str:
         raise ConfigError("启用网址保活时必须填写保活网址")
     if any(character.isspace() for character in candidate):
         raise ConfigError("保活网址不能包含空白字符")
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
     parsed = urlparse(candidate)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ConfigError("保活网址必须是有效的 HTTP 或 HTTPS 地址")

@@ -103,6 +103,7 @@ async function loadVpnConfig() {
   form.elements.manual_exclude_routes.value = (config.manual_exclude_routes || []).join("\n");
   form.elements.extra_args.value = (config.extra_args || []).join("\n");
   updateRouteModeFields();
+  updateKeepaliveFields();
   $("#saved-password-badge").textContent = result.has_password ? "已有保存密码" : "无已存密码";
   $("#saved-password-badge").classList.toggle("success", result.has_password);
 }
@@ -155,6 +156,15 @@ function formToVpnConfig() {
 function updateRouteModeFields() {
   const manual = $("#vpn-form").elements.route_mode.value === "manual";
   $$(`[data-manual-route]`).forEach(field => field.classList.toggle("hidden", !manual));
+}
+
+function updateKeepaliveFields() {
+  const enabled = $("#vpn-form").elements.keepalive_enabled.checked;
+  $$(`[data-keepalive-field]`).forEach(field => {
+    field.classList.toggle("disabled", !enabled);
+    const control = field.querySelector("input");
+    if (control) control.disabled = !enabled;
+  });
 }
 
 async function saveVpn(includePassword = false) {
@@ -212,10 +222,11 @@ $$(".nav-item").forEach(item => item.addEventListener("click", () => switchPage(
 $$(`[data-go]`).forEach(item => item.addEventListener("click", () => switchPage(item.dataset.go)));
 $("#menu-button").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
 $("#vpn-form").elements.route_mode.addEventListener("change", updateRouteModeFields);
+$("#vpn-form").elements.keepalive_enabled.addEventListener("change", updateKeepaliveFields);
 
 $("#vpn-form").addEventListener("submit", async event => {
   event.preventDefault();
-  try { await saveVpn(false); toast("VPN 配置已保存；路由模式将在下次连接时生效"); }
+  try { await saveVpn(false); toast("VPN 配置已保存；重连与保活设置已更新"); }
   catch (error) { toast(error.message, "error"); }
 });
 
