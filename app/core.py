@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import hashlib
 import ipaddress
 import json
 import os
@@ -14,8 +15,9 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -28,6 +30,7 @@ RUNTIME_CONFIG = Path("/run/proxy2openconnect/xray-effective.json")
 VPN_CONNECTED = Path("/run/proxy2openconnect/vpn.connected")
 VPN_ROUTES = Path("/run/proxy2openconnect/split-routes")
 DNS_ACTIVE = Path("/run/proxy2openconnect/dns-active")
+STATISTICS_DIR = DATA_DIR / "statistics"
 XRAY_MARK = int(os.getenv("XRAY_VPN_MARK", "255"))
 ROUTE_TABLE = int(os.getenv("XRAY_VPN_ROUTE_TABLE", "200"))
 VPN_OUTBOUND_TAGS = frozenset(
@@ -322,6 +325,14 @@ def normalize_vpn_route_config(config: dict[str, Any]) -> dict[str, Any]:
     if keepalive_interval < 10 or keepalive_interval > 86400:
         raise ConfigError("保活间隔必须在 10 到 86400 秒之间")
     result["keepalive_interval"] = keepalive_interval
+
+    try:
+        retention_days = int(result.get("statistics_retention_days", 30))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("目标统计保留天数必须是整数") from exc
+    if retention_days < 1 or retention_days > 365:
+        raise ConfigError("目标统计保留天数必须在 1 到 365 天之间")
+    result["statistics_retention_days"] = retention_days
     return result
 
 
@@ -495,6 +506,333 @@ class ServiceProcess:
         return self.process is not None and self.process.poll() is None
 
 
+def _read_interface_statistics(interface: str = "tun0") -> dict[str, int | bool]:
+    """Read Linux network-interface counters without invoking another process."""
+    statistics_dir = Path("/sys/class/net") / interface / "statistics"
+    result: dict[str, int | bool] = {
+        "available": statistics_dir.exists(),
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_packets": 0,
+        "tx_packets": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+    }
+    if not result["available"]:
+        return result
+    for key in ("rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_errors", "tx_errors"):
+        try:
+            result[key] = int((statistics_dir / key).read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            result[key] = 0
+    return result
+
+
+def _xray_inbound_ports() -> list[int]:
+    try:
+        config = read_json(XRAY_CONFIG)
+    except ConfigError:
+        return []
+    ports: set[int] = set()
+    for inbound in config.get("inbounds", []):
+        if not isinstance(inbound, dict):
+            continue
+        port = inbound.get("port")
+        if isinstance(port, int) and 0 < port <= 65535:
+            ports.add(port)
+        elif isinstance(port, str) and port.isdigit() and 0 < int(port) <= 65535:
+            ports.add(int(port))
+    return sorted(ports)
+
+
+def _decode_proc_endpoint(value: str, ipv6: bool) -> tuple[str, int]:
+    address_hex, port_hex = value.split(":", 1)
+    if ipv6:
+        packed = b"".join(
+            bytes.fromhex(address_hex[offset : offset + 8])[::-1]
+            for offset in range(0, 32, 8)
+        )
+        address = str(ipaddress.IPv6Address(packed))
+    else:
+        address = str(ipaddress.IPv4Address(bytes.fromhex(address_hex)[::-1]))
+    return address, int(port_hex, 16)
+
+
+def _process_socket_inodes(pid: int | None) -> set[str]:
+    """Return socket inode numbers currently owned by a Linux process."""
+    if not pid:
+        return set()
+    inodes: set[str] = set()
+    try:
+        descriptors = (Path("/proc") / str(pid) / "fd").iterdir()
+        for descriptor in descriptors:
+            try:
+                target = os.readlink(descriptor)
+            except OSError:
+                continue
+            match = re.fullmatch(r"socket:\[(\d+)]", target)
+            if match:
+                inodes.add(match.group(1))
+    except OSError:
+        pass
+    return inodes
+
+
+def _format_endpoint(address: str, port: int) -> str:
+    return f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+
+
+def _xray_tcp_connections(pid: int | None) -> list[dict[str, Any]]:
+    """Return established TCP sockets owned by the current Xray process."""
+    socket_inodes = _process_socket_inodes(pid)
+    connections: list[dict[str, Any]] = []
+    if not socket_inodes:
+        return connections
+    for filename, ipv6 in (("/proc/net/tcp", False), ("/proc/net/tcp6", True)):
+        try:
+            lines = Path(filename).read_text(encoding="ascii").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != "01" or fields[9] not in socket_inodes:
+                continue
+            try:
+                local_address, local_port = _decode_proc_endpoint(fields[1], ipv6)
+                remote_address, remote_port = _decode_proc_endpoint(fields[2], ipv6)
+            except (ValueError, IndexError):
+                continue
+            connections.append(
+                {
+                    "inode": fields[9],
+                    "local_address": local_address,
+                    "local_port": local_port,
+                    "remote_address": remote_address,
+                    "remote_port": remote_port,
+                }
+            )
+    return connections
+
+
+def _summarize_xray_connections(
+    connections: list[dict[str, Any]], inbound_ports: list[int] | None = None
+) -> dict[str, Any]:
+    """Separate proxy clients from the remote targets reached by Xray."""
+    inbound_ports = _xray_inbound_ports() if inbound_ports is None else inbound_ports
+    client_counts: Counter[str] = Counter()
+    target_counts: Counter[tuple[str, int]] = Counter()
+    for connection in connections:
+        if connection["local_port"] in inbound_ports:
+            client_counts[connection["remote_address"]] += 1
+        else:
+            target_counts[(connection["remote_address"], connection["remote_port"])] += 1
+
+    clients = [
+        {"address": address, "connections": count}
+        for address, count in client_counts.most_common(12)
+    ]
+    targets = []
+    for (address, port), count in target_counts.most_common(12):
+        try:
+            scope = "public" if ipaddress.ip_address(address).is_global else "private"
+        except ValueError:
+            scope = "unknown"
+        targets.append(
+            {
+                "address": address,
+                "port": port,
+                "endpoint": _format_endpoint(address, port),
+                "connections": count,
+                "scope": scope,
+            }
+        )
+
+    return {
+        # Keep the original client-oriented fields for API compatibility.
+        "active": sum(client_counts.values()),
+        "unique_addresses": len(client_counts),
+        "inbound_ports": inbound_ports,
+        "addresses": clients,
+        "clients": {
+            "active": sum(client_counts.values()),
+            "unique_addresses": len(client_counts),
+            "addresses": clients,
+        },
+        "targets": {
+            "active": sum(target_counts.values()),
+            "unique_addresses": len({address for address, _ in target_counts}),
+            "unique_endpoints": len(target_counts),
+            "addresses": targets,
+        },
+    }
+
+
+def _active_xray_connections(pid: int | None) -> dict[str, Any]:
+    return _summarize_xray_connections(_xray_tcp_connections(pid))
+
+
+def _vpn_statistics_profile(config: dict[str, Any]) -> dict[str, str] | None:
+    """Create a stable, non-secret identifier for one configured VPN profile."""
+    try:
+        parsed = urlparse(validate_server(str(config.get("server", ""))))
+    except ConfigError:
+        return None
+    hostname = parsed.hostname
+    if not hostname:
+        return None
+    default_port = 443
+    server = hostname.lower()
+    if parsed.port and parsed.port != default_port:
+        server = f"{server}:{parsed.port}"
+    identity = json.dumps(
+        [server, str(config.get("username", "")).strip(), str(config.get("authgroup", "")).strip()],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return {
+        "id": hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16],
+        "server": server,
+    }
+
+
+class TargetHistoryStore:
+    """Persist aggregated target connection counts in one JSONL log per local day."""
+
+    def __init__(self, directory: Path = STATISTICS_DIR) -> None:
+        self.directory = directory
+        self.lock = threading.RLock()
+        self.io_lock = threading.RLock()
+        self.pending: Counter[tuple[str, str, str, str, int]] = Counter()
+        self.last_seen: dict[tuple[str, str, str, str, int], float] = {}
+
+    def record(self, profile: dict[str, str], address: str, port: int) -> None:
+        timestamp = time.time()
+        day = datetime.fromtimestamp(timestamp).date().isoformat()
+        key = (day, profile["id"], profile["server"], address, int(port))
+        with self.lock:
+            self.pending[key] += 1
+            self.last_seen[key] = timestamp
+
+    def flush(self) -> None:
+        with self.io_lock:
+            with self.lock:
+                if not self.pending:
+                    return
+                pending = self.pending
+                last_seen = self.last_seen
+                self.pending = Counter()
+                self.last_seen = {}
+            self.directory.mkdir(parents=True, exist_ok=True)
+            grouped: dict[tuple[str, str], list[str]] = {}
+            for key, count in pending.items():
+                day, profile_id, server, address, port = key
+                payload = {
+                    "timestamp": last_seen[key],
+                    "vpn_id": profile_id,
+                    "vpn_server": server,
+                    "address": address,
+                    "port": port,
+                    "count": count,
+                }
+                grouped.setdefault((profile_id, day), []).append(
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                )
+            for (profile_id, day), lines in grouped.items():
+                profile_directory = self.directory / profile_id
+                profile_directory.mkdir(parents=True, exist_ok=True)
+                path = profile_directory / f"targets-{day}.log"
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write("\n".join(lines) + "\n")
+                path.chmod(0o600)
+
+    def cleanup(self, profile: dict[str, str] | None, retention_days: int) -> None:
+        with self.io_lock:
+            cutoff = date.today() - timedelta(days=retention_days - 1)
+            if not profile:
+                return
+            profile_directory = self.directory / profile["id"]
+            if not profile_directory.exists():
+                return
+            for path in profile_directory.glob("targets-????-??-??.log"):
+                try:
+                    log_day = date.fromisoformat(path.stem.removeprefix("targets-"))
+                except ValueError:
+                    continue
+                if log_day < cutoff:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        continue
+
+    def summary(
+        self, profile: dict[str, str] | None, retention_days: int
+    ) -> dict[str, Any]:
+        with self.io_lock:
+            self.flush()
+            self.cleanup(profile, retention_days)
+            cutoff = date.today() - timedelta(days=retention_days - 1)
+            counts: Counter[tuple[str, int]] = Counter()
+            last_seen: dict[tuple[str, int], float] = {}
+            active_days: dict[tuple[str, int], set[str]] = {}
+            daily: Counter[str] = Counter()
+            if profile:
+                profile_directory = self.directory / profile["id"]
+                for offset in range(retention_days):
+                    day = cutoff + timedelta(days=offset)
+                    path = profile_directory / f"targets-{day.isoformat()}.log"
+                    try:
+                        lines = path.read_text(encoding="utf-8").splitlines()
+                    except OSError:
+                        continue
+                    for line in lines:
+                        try:
+                            entry = json.loads(line)
+                            if entry.get("vpn_id") != profile["id"]:
+                                continue
+                            address = str(entry["address"])
+                            port = int(entry["port"])
+                            count = max(0, int(entry["count"]))
+                            timestamp = float(entry["timestamp"])
+                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                        endpoint = (address, port)
+                        counts[endpoint] += count
+                        last_seen[endpoint] = max(last_seen.get(endpoint, 0), timestamp)
+                        active_days.setdefault(endpoint, set()).add(day.isoformat())
+                        daily[day.isoformat()] += count
+        targets = []
+        for (address, port), count in counts.most_common(50):
+            try:
+                scope = "public" if ipaddress.ip_address(address).is_global else "private"
+            except ValueError:
+                scope = "unknown"
+            targets.append(
+                {
+                    "address": address,
+                    "port": port,
+                    "endpoint": _format_endpoint(address, port),
+                    "connections": count,
+                    "last_seen": last_seen[(address, port)],
+                    "active_days": len(active_days[(address, port)]),
+                    "scope": scope,
+                }
+            )
+        return {
+            "vpn": profile,
+            "retention_days": retention_days,
+            "period_start": cutoff.isoformat(),
+            "total_connections": sum(counts.values()),
+            "unique_addresses": len({address for address, _ in counts}),
+            "unique_endpoints": len(counts),
+            "active_days": len([value for value in daily.values() if value]),
+            "daily": [
+                {"date": day, "connections": daily[day]}
+                for day in sorted(daily)
+            ],
+            "targets": targets,
+        }
+
+
 class ProcessManager:
     def __init__(self) -> None:
         self.lock = threading.RLock()
@@ -508,13 +846,23 @@ class ProcessManager:
         self._vpn_requires_otp = False
         self._vpn_ever_connected = False
         self._vpn_reconnect_attempts = 0
+        self._vpn_reconnect_attempts_total = 0
+        self._last_vpn_retry_at: float | None = None
+        self._next_vpn_retry_at: float | None = None
         self._vpn_cancel_event = threading.Event()
         self._vpn_reconnect_pending = False
+        self._last_traffic_sample: tuple[float, int, int] | None = None
+        self._target_history = TargetHistoryStore()
+        self._connection_statistics = _summarize_xray_connections([], [])
+        self._statistics_xray_pid: int | None = None
+        self._observed_outbound_inodes: set[str] = set()
+        self._statistics_wakeup = threading.Event()
         self._keepalive_wakeup = threading.Event()
         self._last_keepalive_at: float | None = None
         self._last_keepalive_ok: bool | None = None
         self._last_keepalive_error: str | None = None
         threading.Thread(target=self._keepalive_loop, daemon=True).start()
+        threading.Thread(target=self._statistics_loop, daemon=True).start()
 
     def _append(self, service: ServiceProcess, line: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -531,6 +879,7 @@ class ProcessManager:
                     self._vpn_ever_connected = True
                     self._vpn_otp = ""
                     self._vpn_reconnect_attempts = 0
+                    self._next_vpn_retry_at = None
         code = process.wait()
         with self.lock:
             is_current = service.process is process
@@ -571,6 +920,7 @@ class ProcessManager:
         service.process = process
         service.started_at = time.time()
         service.last_exit_code = None
+        self._statistics_wakeup.set()
         threading.Thread(target=self._read_output, args=(service, process), daemon=True).start()
         if stdin_text is not None and process.stdin is not None:
             process.stdin.write(stdin_text)
@@ -595,6 +945,9 @@ class ProcessManager:
             self._vpn_requires_otp = bool(otp)
             self._vpn_ever_connected = False
             self._vpn_reconnect_attempts = 0
+            self._vpn_reconnect_attempts_total = 0
+            self._last_vpn_retry_at = None
+            self._next_vpn_retry_at = None
             self._vpn_reconnect_pending = False
             self._start_vpn_attempt(config, secret, otp)
             self._keepalive_wakeup.set()
@@ -637,6 +990,7 @@ class ProcessManager:
         interval = config["auto_reconnect_interval"]
         cancel_event = self._vpn_cancel_event
         self._vpn_reconnect_pending = True
+        self._next_vpn_retry_at = time.time() + interval
         self._append(self.services["vpn"], f"将在 {interval} 秒后自动重连")
 
         def reconnect() -> None:
@@ -644,6 +998,7 @@ class ProcessManager:
                 return
             with self.lock:
                 self._vpn_reconnect_pending = False
+                self._next_vpn_retry_at = None
                 if cancel_event is not self._vpn_cancel_event or not self._vpn_requested:
                     return
                 if self.services["vpn"].running:
@@ -654,6 +1009,8 @@ class ProcessManager:
                         self._append(self.services["vpn"], "自动重连已在配置中关闭")
                         return
                     self._vpn_reconnect_attempts += 1
+                    self._vpn_reconnect_attempts_total += 1
+                    self._last_vpn_retry_at = time.time()
                     self._append(
                         self.services["vpn"],
                         f"正在自动重连（{self._vpn_reconnect_attempts}/{MAX_AUTO_RECONNECT_ATTEMPTS}）…",
@@ -667,6 +1024,76 @@ class ProcessManager:
 
     def notify_vpn_config_changed(self) -> None:
         self._keepalive_wakeup.set()
+        self._statistics_wakeup.set()
+
+    def _statistics_loop(self) -> None:
+        """Sample Xray sockets and record each newly observed VPN target once."""
+        next_flush_at = time.monotonic() + 10
+        while True:
+            with self.lock:
+                xray_service = self.services["xray"]
+                vpn_service = self.services["vpn"]
+                xray_pid = xray_service.process.pid if xray_service.running and xray_service.process else None
+                vpn_running = vpn_service.running
+            inbound_ports = _xray_inbound_ports()
+            connections = _xray_tcp_connections(xray_pid)
+            summary = _summarize_xray_connections(connections, inbound_ports)
+            outbound = [
+                connection
+                for connection in connections
+                if connection["local_port"] not in inbound_ports
+            ]
+            current_inodes = {connection["inode"] for connection in outbound}
+            connected = bool(vpn_running and VPN_CONNECTED.exists())
+            with self.lock:
+                if xray_pid != self._statistics_xray_pid:
+                    self._statistics_xray_pid = xray_pid
+                    self._observed_outbound_inodes = set()
+                new_inodes = current_inodes - self._observed_outbound_inodes if connected else set()
+                self._observed_outbound_inodes = current_inodes
+                self._connection_statistics = summary
+
+            if new_inodes:
+                try:
+                    config = normalize_vpn_route_config(read_json(VPN_CONFIG))
+                    profile = _vpn_statistics_profile(config)
+                except ConfigError:
+                    profile = None
+                if profile:
+                    for connection in outbound:
+                        if connection["inode"] in new_inodes:
+                            self._target_history.record(
+                                profile,
+                                connection["remote_address"],
+                                connection["remote_port"],
+                            )
+
+            if time.monotonic() >= next_flush_at:
+                try:
+                    config = normalize_vpn_route_config(read_json(VPN_CONFIG))
+                    retention_days = config["statistics_retention_days"]
+                    profile = _vpn_statistics_profile(config)
+                except ConfigError:
+                    retention_days = 30
+                    profile = None
+                self._target_history.flush()
+                self._target_history.cleanup(profile, retention_days)
+                next_flush_at = time.monotonic() + 10
+            self._statistics_wakeup.wait(0.25)
+            self._statistics_wakeup.clear()
+
+    def target_history(self) -> dict[str, Any]:
+        try:
+            config = normalize_vpn_route_config(read_json(VPN_CONFIG))
+            retention_days = config["statistics_retention_days"]
+            profile = _vpn_statistics_profile(config)
+        except ConfigError:
+            retention_days = 30
+            profile = None
+        return self._target_history.summary(profile, retention_days)
+
+    def flush_statistics(self) -> None:
+        self._target_history.flush()
 
     def _keepalive_loop(self) -> None:
         signature: tuple[str, int] | None = None
@@ -751,9 +1178,13 @@ class ProcessManager:
                 self._vpn_otp = ""
                 self._vpn_requires_otp = False
                 self._vpn_reconnect_attempts = 0
+                self._vpn_reconnect_attempts_total = 0
+                self._last_vpn_retry_at = None
+                self._next_vpn_retry_at = None
                 self._vpn_reconnect_pending = False
                 self._vpn_cancel_event.set()
                 self._keepalive_wakeup.set()
+            self._statistics_wakeup.set()
             process = service.process
             if not process or process.poll() is not None:
                 if name == "vpn":
@@ -823,11 +1254,16 @@ class ProcessManager:
                     "last_exit_code": service.last_exit_code,
                 }
             services["vpn"]["reconnect_pending"] = self._vpn_reconnect_pending
+            services["vpn"]["reconnect_attempts"] = self._vpn_reconnect_attempts
+            services["vpn"]["reconnect_attempts_total"] = self._vpn_reconnect_attempts_total
+            services["vpn"]["last_retry_at"] = self._last_vpn_retry_at
+            services["vpn"]["next_retry_at"] = self._next_vpn_retry_at
             keepalive = {
                 "last_at": self._last_keepalive_at,
                 "ok": self._last_keepalive_ok,
                 "error": self._last_keepalive_error,
             }
+            connection_statistics = copy.deepcopy(self._connection_statistics)
         vpn_ip = None
         if VPN_CONNECTED.exists():
             vpn_ip = VPN_CONNECTED.read_text(encoding="utf-8").strip()
@@ -845,6 +1281,31 @@ class ProcessManager:
                 for line in DNS_ACTIVE.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
+        traffic = _read_interface_statistics()
+        now = time.monotonic()
+        rx_bytes = int(traffic["rx_bytes"])
+        tx_bytes = int(traffic["tx_bytes"])
+        rx_rate = 0.0
+        tx_rate = 0.0
+        with self.lock:
+            previous = self._last_traffic_sample
+            if bool(traffic["available"]):
+                if previous:
+                    elapsed = now - previous[0]
+                    if elapsed > 0 and rx_bytes >= previous[1] and tx_bytes >= previous[2]:
+                        rx_rate = (rx_bytes - previous[1]) / elapsed
+                        tx_rate = (tx_bytes - previous[2]) / elapsed
+                self._last_traffic_sample = (now, rx_bytes, tx_bytes)
+            else:
+                self._last_traffic_sample = None
+        traffic["rx_rate"] = round(rx_rate, 2)
+        traffic["tx_rate"] = round(tx_rate, 2)
+        connected_at: float | None = None
+        if vpn_ip:
+            try:
+                connected_at = VPN_CONNECTED.stat().st_mtime
+            except OSError:
+                pass
         return {
             "services": services,
             "vpn_connected": bool(vpn_ip and services["vpn"]["running"]),
@@ -855,6 +1316,16 @@ class ProcessManager:
             "mark": XRAY_MARK,
             "certificate_candidate": self.certificate_candidate(),
             "keepalive": keepalive,
+            "statistics": {
+                "vpn_session": {
+                    "connected_at": connected_at,
+                    "route_count": len(vpn_routes),
+                    "dns_count": len(active_dns),
+                },
+                "traffic": traffic,
+                "connections": connection_statistics,
+                "sampled_at": time.time(),
+            },
         }
 
 

@@ -78,7 +78,74 @@
           <article class="metric-card"><div class="metric-head"><span>Egress Policy</span><span class="badge success">三模式</span></div><strong>VPN Route Policy</strong><p>全部接管 / VPN 下发 / 手动网段</p><div class="mini-rule"><code>route mode</code><span>→</span><code>tun0</code></div></article>
         </div>
 
+        <section class="telemetry-section" aria-labelledby="telemetry-title">
+          <div class="telemetry-heading">
+            <div><p class="eyebrow">LIVE TELEMETRY</p><h2 id="telemetry-title">运行统计</h2></div>
+            <span id="statistics-freshness" class="badge success">每 3 秒刷新</span>
+          </div>
+
+          <div class="stat-grid">
+            <article class="stat-card"><span>VPN 已连接时间</span><strong id="stat-vpn-uptime">未连接</strong><small id="stat-vpn-since">等待建立隧道</small></article>
+            <article class="stat-card traffic-stat"><span>隧道累计流量</span><strong id="stat-traffic-total">—</strong><small id="stat-traffic-rate">↓ 0 B/s · ↑ 0 B/s</small></article>
+            <article class="stat-card"><span>当前目标连接</span><strong id="stat-targets">0</strong><small id="stat-connections">0 个目标地址 · 0 个代理客户端</small></article>
+            <article class="stat-card"><span>本次自动重试</span><strong id="stat-retry-count">0 次</strong><small id="stat-retry-detail">尚未重试</small></article>
+          </div>
+
+          <div class="telemetry-grid">
+            <article class="panel traffic-panel">
+              <div class="telemetry-panel-head">
+                <div><p class="eyebrow">TUNNEL THROUGHPUT</p><h3>实时流量</h3></div>
+                <div class="traffic-legend" aria-hidden="true"><span class="download">下载</span><span class="upload">上传</span></div>
+              </div>
+              <canvas id="traffic-chart" width="800" height="220" role="img" aria-label="最近两分钟 VPN 下载与上传速率曲线"></canvas>
+              <div class="traffic-facts">
+                <span>下载 <strong id="traffic-rx-total">0 B</strong><small id="traffic-rx-packets">0 个数据包</small></span>
+                <span>上传 <strong id="traffic-tx-total">0 B</strong><small id="traffic-tx-packets">0 个数据包</small></span>
+                <span>传输错误 <strong id="traffic-errors">0</strong><small>tun0 接口累计</small></span>
+              </div>
+            </article>
+
+            <article class="panel target-panel">
+              <div class="telemetry-panel-head">
+                <div><p class="eyebrow">ACTIVE DESTINATIONS</p><h3>目标连接地址</h3></div>
+                <span id="target-count-badge" class="badge">0 个端点</span>
+              </div>
+              <div id="target-list" class="target-list" aria-live="polite">
+                <div class="target-empty">暂无活动的 TCP 目标连接</div>
+              </div>
+              <p class="panel-footnote">仅显示 Xray 当前持有的 TCP 目标连接，最多列出 12 个端点。</p>
+            </article>
+          </div>
+
+          <div class="runtime-facts panel">
+            <div><span>Xray 运行时间</span><strong id="fact-xray-uptime">未运行</strong></div>
+            <div><span>生效路由</span><strong id="fact-route-count">0 条</strong></div>
+            <div><span>活动 DNS</span><strong id="fact-dns-count">容器默认</strong></div>
+            <div><span>最近保活</span><strong id="fact-keepalive">尚无记录</strong></div>
+            <div><span>最近重试</span><strong id="fact-last-retry">尚无记录</strong></div>
+            <div><span>下次重试</span><strong id="fact-next-retry">未安排</strong></div>
+          </div>
+        </section>
+
         <div class="notice"><span>i</span><p><strong>当前默认配置已开启代理认证。</strong>首次使用前请在 Xray 配置中修改 <code>change-me</code> 密码，并限制宿主机端口的可访问来源。</p></div>
+
+        <section class="history-panel panel" aria-labelledby="history-title">
+          <div class="history-heading">
+            <div><p class="eyebrow">VPN-BOUND HISTORY</p><h2 id="history-title">历史目标与访问频次</h2><p id="history-description">按当前 VPN 配置独立累计新建的目标 TCP 连接。</p></div>
+            <span id="history-range" class="badge">最近 30 天</span>
+          </div>
+          <div class="history-summary">
+            <div><span>累计访问</span><strong id="history-total">0 次</strong></div>
+            <div><span>目标地址</span><strong id="history-addresses">0 个</strong></div>
+            <div><span>目标端点</span><strong id="history-endpoints">0 个</strong></div>
+            <div><span>有活动天数</span><strong id="history-active-days">0 天</strong></div>
+          </div>
+          <div class="history-table-head" aria-hidden="true"><span>目标端点</span><span>活跃天数</span><span>最近访问</span><span>访问次数</span></div>
+          <div id="history-list" class="history-list" aria-live="polite">
+            <div class="history-empty">当前 VPN 暂无历史目标记录</div>
+          </div>
+          <p class="panel-footnote">记录保存在 <code>/data/statistics/&lt;vpn-id&gt;/targets-YYYY-MM-DD.log</code>，按 VPN、按日写入并依据当前配置的保留天数自动清理。</p>
+        </section>
       </section>
 
       <section id="page-vpn" class="page">
@@ -97,6 +164,7 @@
                 <div class="reliability-grid">
                   <label>OpenConnect 重连窗口（秒）<input name="reconnect_timeout" type="number" min="0" max="86400" value="300"></label>
                   <label>进程重连间隔（秒）<input name="auto_reconnect_interval" type="number" min="1" max="3600" value="10"></label>
+                  <label>目标统计保留天数<input name="statistics_retention_days" type="number" min="1" max="365" value="30"><small class="field-hint">按当前 VPN 配置独立统计，过期的每日日志将自动清理。</small></label>
                   <label class="toggle-field"><input type="checkbox" name="auto_reconnect" checked><span><strong>会话退出后自动重连</strong><small>最多连续尝试 5 次</small></span></label>
                   <label class="toggle-field"><input type="checkbox" name="keepalive_enabled"><span><strong>启用网址保活</strong><small>定时模拟一次 Web 访问</small></span></label>
                   <label class="wide" data-keepalive-field>保活模拟访问地址

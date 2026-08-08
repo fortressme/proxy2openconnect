@@ -4,7 +4,9 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 let currentLog = "vpn";
 let statusTimer = null;
 let logTimer = null;
+let targetHistoryTimer = null;
 let latestStatus = null;
+let trafficHistory = [];
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -38,7 +40,7 @@ function escapeHtml(value) {
 function showLogin() {
   $("#login-screen").classList.remove("hidden");
   $("#app-shell").classList.add("hidden");
-  clearInterval(statusTimer); clearInterval(logTimer);
+  clearInterval(statusTimer); clearInterval(logTimer); clearInterval(targetHistoryTimer);
 }
 
 function showApp() {
@@ -47,12 +49,274 @@ function showApp() {
   loadAll();
   clearInterval(statusTimer);
   statusTimer = setInterval(refreshStatus, 3000);
+  clearInterval(targetHistoryTimer);
+  targetHistoryTimer = setInterval(loadTargetHistory, 30000);
 }
 
 function setDot(selector, state, pending = false) {
   const node = $(selector);
   node.classList.toggle("green", state);
   node.classList.toggle("amber", pending && !state);
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = bytes;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  const digits = index === 0 || amount >= 100 ? 0 : amount >= 10 ? 1 : 2;
+  return `${amount.toFixed(digits)} ${units[index]}`;
+}
+
+function formatRate(value) {
+  return `${formatBytes(value)}/s`;
+}
+
+function formatDurationSince(timestamp, fallback = "—") {
+  if (!timestamp) return fallback;
+  let seconds = Math.max(0, Math.floor(Date.now() / 1000 - Number(timestamp)));
+  const days = Math.floor(seconds / 86400);
+  seconds %= 86400;
+  const hours = Math.floor(seconds / 3600);
+  seconds %= 3600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
+  if (days) return `${days}天 ${hours}小时`;
+  if (hours) return `${hours}小时 ${minutes}分`;
+  if (minutes) return `${minutes}分 ${seconds}秒`;
+  return `${seconds}秒`;
+}
+
+function formatTimestamp(timestamp) {
+  if (!timestamp) return "";
+  return new Date(Number(timestamp) * 1000).toLocaleString("zh-CN", {
+    month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false,
+  });
+}
+
+function formatRelativeTime(timestamp, emptyText = "尚无记录") {
+  if (!timestamp) return emptyText;
+  const delta = Math.round(Date.now() / 1000 - Number(timestamp));
+  const future = delta < 0;
+  const seconds = Math.abs(delta);
+  let value;
+  if (seconds < 5) value = "刚刚";
+  else if (seconds < 60) value = `${seconds} 秒`;
+  else if (seconds < 3600) value = `${Math.floor(seconds / 60)} 分钟`;
+  else if (seconds < 86400) value = `${Math.floor(seconds / 3600)} 小时`;
+  else value = `${Math.floor(seconds / 86400)} 天`;
+  if (value === "刚刚") return value;
+  return future ? `${value}后` : `${value}前`;
+}
+
+function setTimestampText(selector, text, timestamp) {
+  const node = $(selector);
+  node.textContent = text;
+  node.title = timestamp ? formatTimestamp(timestamp) : "";
+}
+
+function renderTargetConnections(targets) {
+  const list = $("#target-list");
+  const addresses = Array.isArray(targets?.addresses) ? targets.addresses : [];
+  $("#target-count-badge").textContent = `${Number(targets?.unique_endpoints) || 0} 个端点`;
+  if (!addresses.length) {
+    const empty = document.createElement("div");
+    empty.className = "target-empty";
+    empty.textContent = "暂无活动的 TCP 目标连接";
+    list.replaceChildren(empty);
+    return;
+  }
+  const rows = addresses.map(target => {
+    const row = document.createElement("div");
+    row.className = "target-row";
+    const address = document.createElement("div");
+    address.className = "target-address";
+    const endpoint = document.createElement("code");
+    endpoint.textContent = target.endpoint || `${target.address}:${target.port}`;
+    endpoint.title = endpoint.textContent;
+    const scope = document.createElement("small");
+    scope.textContent = target.scope === "public" ? "公网地址" : target.scope === "private" ? "内网或本地地址" : "目标地址";
+    address.append(endpoint, scope);
+    const count = document.createElement("span");
+    count.className = "target-count";
+    const dot = document.createElement("i");
+    const label = document.createElement("span");
+    label.textContent = `${Number(target.connections) || 0} 条`;
+    count.append(dot, label);
+    row.append(address, count);
+    return row;
+  });
+  list.replaceChildren(...rows);
+}
+
+function renderTrafficChart() {
+  const canvas = $("#traffic-chart");
+  if (!canvas) return;
+  const bounds = canvas.getBoundingClientRect();
+  if (!bounds.width) return;
+  const width = Math.floor(bounds.width);
+  const height = Math.floor(bounds.height || 180);
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(width * ratio);
+  canvas.height = Math.floor(height * ratio);
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, width, height);
+
+  const padding = { left:12, right:12, top:20, bottom:16 };
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+  context.strokeStyle = "#202a33";
+  context.lineWidth = 1;
+  for (let index = 0; index <= 3; index += 1) {
+    const y = padding.top + chartHeight * index / 3;
+    context.beginPath();
+    context.moveTo(padding.left, y + .5);
+    context.lineTo(width - padding.right, y + .5);
+    context.stroke();
+  }
+
+  if (trafficHistory.length < 2) {
+    context.fillStyle = "#62707b";
+    context.font = "10px system-ui, sans-serif";
+    context.textAlign = "center";
+    context.fillText("等待实时流量样本", width / 2, height / 2);
+    return;
+  }
+
+  const maximum = Math.max(1, ...trafficHistory.flatMap(sample => [sample.rx, sample.tx]));
+  context.fillStyle = "#5d6973";
+  context.font = "8px system-ui, sans-serif";
+  context.textAlign = "right";
+  context.fillText(formatRate(maximum), width - padding.right, 11);
+  const drawLine = (key, color) => {
+    context.beginPath();
+    trafficHistory.forEach((sample, index) => {
+      const x = padding.left + chartWidth * index / Math.max(trafficHistory.length - 1, 1);
+      const y = padding.top + chartHeight - (sample[key] / maximum) * chartHeight;
+      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    });
+    context.strokeStyle = color;
+    context.lineWidth = 2;
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    context.stroke();
+  };
+  drawLine("rx", "#9bef4d");
+  drawLine("tx", "#6ba3ff");
+}
+
+function renderTargetHistory(history) {
+  const targets = Array.isArray(history.targets) ? history.targets : [];
+  const retentionDays = Number(history.retention_days) || 30;
+  $("#history-range").textContent = `最近 ${retentionDays} 天`;
+  $("#history-total").textContent = `${Number(history.total_connections) || 0} 次`;
+  $("#history-addresses").textContent = `${Number(history.unique_addresses) || 0} 个`;
+  $("#history-endpoints").textContent = `${Number(history.unique_endpoints) || 0} 个`;
+  $("#history-active-days").textContent = `${Number(history.active_days) || 0} 天`;
+  $("#history-description").textContent = history.vpn?.server
+    ? `当前统计绑定到 ${history.vpn.server}，按新建目标 TCP 连接累计。`
+    : "填写 VPN 服务器后，将按当前 VPN 配置独立累计目标连接。";
+
+  const list = $("#history-list");
+  if (!targets.length) {
+    const empty = document.createElement("div");
+    empty.className = "history-empty";
+    empty.textContent = "当前 VPN 暂无历史目标记录";
+    list.replaceChildren(empty);
+    return;
+  }
+  const maximum = Math.max(1, ...targets.map(target => Number(target.connections) || 0));
+  const rows = targets.map(target => {
+    const row = document.createElement("div");
+    row.className = "history-row";
+    const endpointCell = document.createElement("div");
+    endpointCell.className = "history-endpoint";
+    const endpoint = document.createElement("code");
+    endpoint.textContent = target.endpoint || `${target.address}:${target.port}`;
+    endpoint.title = endpoint.textContent;
+    const scope = document.createElement("small");
+    scope.textContent = target.scope === "public" ? "公网地址" : target.scope === "private" ? "内网或本地地址" : "目标地址";
+    endpointCell.append(endpoint, scope);
+    const days = document.createElement("span");
+    days.className = "history-cell history-days";
+    days.textContent = `${Number(target.active_days) || 0} 天`;
+    const last = document.createElement("span");
+    last.className = "history-cell history-last";
+    last.textContent = formatRelativeTime(target.last_seen);
+    last.title = formatTimestamp(target.last_seen);
+    const count = document.createElement("strong");
+    count.className = "history-count";
+    count.textContent = `${Number(target.connections) || 0} 次`;
+    const frequency = document.createElement("progress");
+    frequency.className = "history-frequency";
+    frequency.max = maximum;
+    frequency.value = Number(target.connections) || 0;
+    frequency.setAttribute("aria-label", `${endpoint.textContent} 访问频次`);
+    row.append(endpointCell, days, last, count, frequency);
+    return row;
+  });
+  list.replaceChildren(...rows);
+}
+
+async function loadTargetHistory() {
+  try {
+    renderTargetHistory(await api("/api/statistics/targets"));
+  } catch (error) {
+    if (!$("#app-shell").classList.contains("hidden")) console.debug(error);
+  }
+}
+
+function updateOverviewStatistics(status) {
+  const statistics = status.statistics || {};
+  const session = statistics.vpn_session || {};
+  const traffic = statistics.traffic || {};
+  const connections = statistics.connections || {};
+  const clients = connections.clients || connections;
+  const targets = connections.targets || {};
+  const vpn = status.services.vpn || {};
+  const xray = status.services.xray || {};
+  const keepalive = status.keepalive || {};
+
+  $("#stat-vpn-uptime").textContent = status.vpn_connected ? formatDurationSince(session.connected_at, "已连接") : "未连接";
+  setTimestampText("#stat-vpn-since", session.connected_at ? `始于 ${formatTimestamp(session.connected_at)}` : "等待建立隧道", session.connected_at);
+  $("#stat-traffic-total").textContent = traffic.available ? `↓ ${formatBytes(traffic.rx_bytes)} · ↑ ${formatBytes(traffic.tx_bytes)}` : "暂无接口数据";
+  $("#stat-traffic-rate").textContent = `↓ ${formatRate(traffic.rx_rate)} · ↑ ${formatRate(traffic.tx_rate)}`;
+  $("#stat-targets").textContent = Number(targets.active) || 0;
+  $("#stat-connections").textContent = `${Number(targets.unique_addresses) || 0} 个目标地址 · ${Number(clients.unique_addresses) || 0} 个代理客户端`;
+  $("#stat-retry-count").textContent = `${Number(vpn.reconnect_attempts_total) || 0} 次`;
+  setTimestampText("#stat-retry-detail", vpn.next_retry_at ? `下次重试 ${formatRelativeTime(vpn.next_retry_at)}` : vpn.last_retry_at ? `上次重试 ${formatRelativeTime(vpn.last_retry_at)}` : "尚未重试", vpn.next_retry_at || vpn.last_retry_at);
+
+  $("#traffic-rx-total").textContent = formatBytes(traffic.rx_bytes);
+  $("#traffic-tx-total").textContent = formatBytes(traffic.tx_bytes);
+  $("#traffic-rx-packets").textContent = `${Number(traffic.rx_packets) || 0} 个数据包`;
+  $("#traffic-tx-packets").textContent = `${Number(traffic.tx_packets) || 0} 个数据包`;
+  $("#traffic-errors").textContent = String((Number(traffic.rx_errors) || 0) + (Number(traffic.tx_errors) || 0));
+
+  if (!status.vpn_connected) trafficHistory = [];
+  if (traffic.available) {
+    const sampledAt = Number(statistics.sampled_at) || Date.now() / 1000;
+    const lastSample = trafficHistory[trafficHistory.length - 1];
+    if (!lastSample || lastSample.at !== sampledAt) {
+      trafficHistory.push({ at:sampledAt, rx:Number(traffic.rx_rate) || 0, tx:Number(traffic.tx_rate) || 0 });
+      trafficHistory = trafficHistory.slice(-40);
+    }
+  }
+  renderTrafficChart();
+  renderTargetConnections(targets);
+
+  $("#fact-xray-uptime").textContent = xray.running ? formatDurationSince(xray.started_at, "运行中") : "未运行";
+  $("#fact-route-count").textContent = `${Number(session.route_count) || 0} 条`;
+  $("#fact-dns-count").textContent = session.dns_count ? `${session.dns_count} 个` : "容器默认";
+  const keepaliveText = keepalive.last_at ? `${keepalive.ok ? "成功" : "失败"} · ${formatRelativeTime(keepalive.last_at)}` : "尚无记录";
+  setTimestampText("#fact-keepalive", keepaliveText, keepalive.last_at);
+  setTimestampText("#fact-last-retry", formatRelativeTime(vpn.last_retry_at), vpn.last_retry_at);
+  setTimestampText("#fact-next-retry", formatRelativeTime(vpn.next_retry_at, "未安排"), vpn.next_retry_at);
+  $("#statistics-freshness").textContent = "刚刚更新";
 }
 
 async function refreshStatus() {
@@ -81,6 +345,7 @@ async function refreshStatus() {
     $("#vpn-connect").disabled = vpnProcess;
     $("#vpn-disconnect").disabled = !vpnProcess && !reconnectPending;
     $("#active-dns").textContent = activeDns.length ? activeDns.join(" · ") : "容器默认 DNS";
+    updateOverviewStatistics(status);
     const candidate = status.certificate_candidate;
     $("#certificate-trust-card").classList.toggle("hidden", !candidate);
     if (candidate) {
@@ -96,7 +361,7 @@ async function loadVpnConfig() {
   const result = await api("/api/vpn/config");
   const form = $("#vpn-form");
   const config = result.config;
-  for (const key of ["server","username","authgroup","servercert","useragent","certificate","sslkey","cafile","reconnect_timeout","auto_reconnect_interval","keepalive_url","keepalive_interval"]) {
+  for (const key of ["server","username","authgroup","servercert","useragent","certificate","sslkey","cafile","reconnect_timeout","auto_reconnect_interval","keepalive_url","keepalive_interval","statistics_retention_days"]) {
     if (form.elements[key]) form.elements[key].value = config[key] ?? "";
   }
   for (const key of ["no_dtls","disable_ipv6","auto_reconnect","keepalive_enabled","autostart"]) form.elements[key].checked = Boolean(config[key]);
@@ -120,7 +385,7 @@ async function loadXrayConfig() {
 }
 
 async function loadAll() {
-  await Promise.allSettled([refreshStatus(), loadVpnConfig(), loadXrayConfig()]);
+  await Promise.allSettled([refreshStatus(), loadVpnConfig(), loadXrayConfig(), loadTargetHistory()]);
 }
 
 function switchPage(page) {
@@ -128,6 +393,10 @@ function switchPage(page) {
   $$(".page").forEach(item => item.classList.toggle("active", item.id === `page-${page}`));
   $("#page-title").textContent = ({overview:"运行总览",vpn:"VPN 配置",xray:"Xray 配置",logs:"实时日志"})[page];
   $(".sidebar").classList.remove("open");
+  if (page === "overview") {
+    requestAnimationFrame(renderTrafficChart);
+    loadTargetHistory();
+  }
   if (page === "logs") startLogs(); else stopLogs();
 }
 
@@ -155,6 +424,7 @@ function formToVpnConfig() {
     keepalive_enabled: form.elements.keepalive_enabled.checked,
     keepalive_url: form.elements.keepalive_url.value.trim(),
     keepalive_interval: Number(form.elements.keepalive_interval.value || 300),
+    statistics_retention_days: Number(form.elements.statistics_retention_days.value || 30),
     extra_args: form.elements.extra_args.value.split("\n").map(v => v.trim()).filter(Boolean),
     autostart: form.elements.autostart.checked,
   };
@@ -307,5 +577,6 @@ $$(`[data-log]`).forEach(button => button.addEventListener("click", () => {
   refreshLogs();
 }));
 $("#refresh-logs").addEventListener("click", refreshLogs);
+window.addEventListener("resize", renderTrafficChart);
 
 api("/api/me").then(showApp).catch(showLogin);

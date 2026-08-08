@@ -126,6 +126,7 @@ async def lifespan(_: FastAPI):
     yield
     manager.stop("xray")
     manager.stop("vpn")
+    manager.flush_statistics()
 
 
 app = FastAPI(title="proxy2openconnect", version=APP_VERSION, lifespan=lifespan)
@@ -220,6 +221,11 @@ def me(user: str = Depends(require_user)):
 @app.get("/api/status")
 def status(_: str = Depends(require_user)):
     return manager.status()
+
+
+@app.get("/api/statistics/targets")
+def target_statistics(_: str = Depends(require_user)):
+    return manager.target_history()
 
 
 @app.get("/api/logs/{service}")

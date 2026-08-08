@@ -21,6 +21,7 @@
   "keepalive_enabled": false,
   "keepalive_url": "",
   "keepalive_interval": 300,
+  "statistics_retention_days": 30,
   "extra_args": [
     "--os=win",
     "--version-string=4.10.08029"
