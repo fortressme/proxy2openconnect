@@ -99,6 +99,8 @@ nav { display: grid; gap: 7px; }
 .target-address small { margin-top:4px; color:#5f6d77; font-size:8px; }
 .target-count { display:flex; align-items:center; gap:7px; color:#87949e; font-size:9px; white-space:nowrap; }
 .target-count i { width:6px; height:6px; border-radius:50%; background:var(--green); box-shadow:0 0 8px rgba(155,239,77,.4); }
+.target-row.route-direct .target-count i { background:#6ba3ff; box-shadow:0 0 8px rgba(107,163,255,.4); }
+.target-row.route-unknown .target-count i { background:var(--amber); box-shadow:0 0 8px rgba(244,189,98,.4); }
 .target-empty { display:grid; min-height:165px; place-items:center; border:1px dashed #29333d; border-radius:10px; color:#65727d; font-size:10px; text-align:center; }
 .panel-footnote { margin:auto 0 0; padding-top:13px; color:#596670; font-size:8px; line-height:1.5; }
 .runtime-facts { display:grid; grid-template-columns:repeat(6,1fr); gap:0; margin-top:16px; padding:0; overflow:hidden; }

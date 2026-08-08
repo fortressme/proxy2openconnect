@@ -148,10 +148,16 @@ function targetAddressSubtitle(target) {
   const resolved = Array.isArray(target.addresses)
     ? target.addresses
     : [target.address].filter(Boolean);
-  if (target.domain && resolved.length) return `IP ${resolved.join(" · ")}`;
-  if (target.scope === "public") return "公网地址";
-  if (target.scope === "private") return "内网或本地地址";
-  return "目标地址";
+  const route = target.route === "vpn"
+    ? "VPN"
+    : target.route === "direct" ? "直连" : "未识别";
+  const destination = target.domain && resolved.length
+    ? `IP ${resolved.join(" · ")}`
+    : target.scope === "public"
+      ? "公网地址"
+      : target.scope === "private" ? "内网或本地地址" : "目标地址";
+  const outbound = target.outbound_tag ? ` · Xray ${target.outbound_tag}` : "";
+  return `${route} · ${destination}${outbound}`;
 }
 
 function renderTargetConnections(targets) {
@@ -167,7 +173,7 @@ function renderTargetConnections(targets) {
   }
   const rows = addresses.map(target => {
     const row = document.createElement("div");
-    row.className = "target-row";
+    row.className = `target-row route-${target.route || "unknown"}`;
     const address = document.createElement("div");
     address.className = "target-address";
     const endpoint = document.createElement("code");
@@ -254,7 +260,7 @@ function renderTargetHistory(history) {
   $("#history-endpoints").textContent = `${Number(history.unique_endpoints) || 0} 个`;
   $("#history-active-days").textContent = `${Number(history.active_days) || 0} 天`;
   $("#history-description").textContent = history.vpn?.server
-    ? `当前统计绑定到 ${history.vpn.server}，按新建目标 TCP 连接累计。`
+    ? `绑定到 ${history.vpn.server} · VPN ${Number(history.vpn_connections) || 0} 次 · 直连 ${Number(history.direct_connections) || 0} 次 · 未识别 ${Number(history.unknown_connections) || 0} 次。`
     : "填写 VPN 服务器后，将按当前 VPN 配置独立累计目标连接。";
 
   const list = $("#history-list");
@@ -268,7 +274,7 @@ function renderTargetHistory(history) {
   const maximum = Math.max(1, ...targets.map(target => Number(target.connections) || 0));
   const rows = targets.map(target => {
     const row = document.createElement("div");
-    row.className = "history-row";
+    row.className = `history-row route-${target.route || "unknown"}`;
     const endpointCell = document.createElement("div");
     endpointCell.className = "history-endpoint";
     const endpoint = document.createElement("code");
@@ -320,7 +326,7 @@ function updateOverviewStatistics(status) {
   $("#stat-traffic-total").textContent = traffic.available ? `↓ ${formatBytes(traffic.rx_bytes)} · ↑ ${formatBytes(traffic.tx_bytes)}` : "暂无接口数据";
   $("#stat-traffic-rate").textContent = `↓ ${formatRate(traffic.rx_rate)} · ↑ ${formatRate(traffic.tx_rate)}`;
   $("#stat-targets").textContent = Number(targets.active) || 0;
-  $("#stat-connections").textContent = `${Number(targets.unique_addresses) || 0} 个目标地址 · ${Number(clients.unique_addresses) || 0} 个代理客户端`;
+  $("#stat-connections").textContent = `${Number(targets.vpn_active) || 0} VPN · ${Number(targets.direct_active) || 0} 直连 · ${Number(targets.unknown_active) || 0} 未识别 · ${Number(clients.unique_addresses) || 0} 客户端`;
   $("#stat-retry-count").textContent = `${Number(vpn.reconnect_attempts_total) || 0} 次`;
   setTimestampText("#stat-retry-detail", vpn.next_retry_at ? `下次重试 ${formatRelativeTime(vpn.next_retry_at)}` : vpn.last_retry_at ? `上次重试 ${formatRelativeTime(vpn.last_retry_at)}` : "尚未重试", vpn.next_retry_at || vpn.last_retry_at);
 
