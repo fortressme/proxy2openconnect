@@ -1,0 +1,56 @@
+name: Bug report
+description: 报告可重复的问题
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。安全漏洞请通过 SECURITY.md 中的私密渠道报告。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 例如 v0.1.0 或 commit ID
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: 部署方式
+      options:
+        - GHCR 镜像
+        - 本地构建镜像
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 请说明预期行为、实际行为和影响。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏日志或配置
+      description: 请勿提交密码、OTP、Cookie、证书、VPN 地址、企业域名、公网 IP 或完整 data 目录。
+      render: shell
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已删除所有凭据、个人信息和内部网络信息。
+          required: true

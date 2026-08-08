@@ -1,10 +1,10 @@
 services:
-  xray2cisco:
+  proxy2openconnect:
     build:
       context: .
       args:
         APP_VERSION: "${APP_VERSION:-0.1.0}"
-    image: "${IMAGE_NAME:-xray2cisco}:${IMAGE_TAG:-0.1.0}"
+    image: "${IMAGE_NAME:-ghcr.io/fortressme/proxy2openconnect}:${IMAGE_TAG:-latest}"
     restart: unless-stopped
     cap_add:
       - NET_ADMIN

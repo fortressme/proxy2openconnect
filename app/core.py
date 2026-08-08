@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import ipaddress
 import json
 import os
 import re
@@ -21,9 +22,9 @@ from urllib.parse import urlparse
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 XRAY_CONFIG = DATA_DIR / "xray" / "config.json"
 VPN_CONFIG = DATA_DIR / "vpn" / "config.json"
-RUNTIME_CONFIG = Path("/run/xray2cisco/xray-effective.json")
-VPN_CONNECTED = Path("/run/xray2cisco/vpn.connected")
-VPN_ROUTES = Path("/run/xray2cisco/split-routes")
+RUNTIME_CONFIG = Path("/run/proxy2openconnect/xray-effective.json")
+VPN_CONNECTED = Path("/run/proxy2openconnect/vpn.connected")
+VPN_ROUTES = Path("/run/proxy2openconnect/split-routes")
 XRAY_MARK = int(os.getenv("XRAY_VPN_MARK", "255"))
 ROUTE_TABLE = int(os.getenv("XRAY_VPN_ROUTE_TABLE", "200"))
 VPN_OUTBOUND_TAGS = frozenset(
@@ -33,7 +34,9 @@ VPN_OUTBOUND_TAGS = frozenset(
 )
 XRAY_BINARY = os.getenv("XRAY_BINARY", "/usr/local/bin/xray")
 OPENCONNECT_BINARY = os.getenv("OPENCONNECT_BINARY", "/usr/sbin/openconnect")
-VPN_SCRIPT = "/opt/xray2cisco/scripts/vpn-script.sh"
+VPN_SCRIPT = "/opt/proxy2openconnect/scripts/vpn-script.sh"
+VPN_ROUTE_MODES = frozenset({"all", "vpn", "manual"})
+MAX_MANUAL_ROUTES = 4096
 
 
 class ConfigError(ValueError):
@@ -138,6 +141,60 @@ def validate_server(server: str) -> str:
     return candidate
 
 
+def _normalize_network_list(value: Any, label: str) -> list[str]:
+    if value is None:
+        items: list[Any] = []
+    elif isinstance(value, str):
+        items = value.splitlines()
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise ConfigError(f"{label}必须是 CIDR 字符串数组")
+    if len(items) > MAX_MANUAL_ROUTES:
+        raise ConfigError(f"{label}最多允许 {MAX_MANUAL_ROUTES} 条")
+
+    networks: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, str):
+            raise ConfigError(f"{label}[{index}] 必须是 CIDR 字符串")
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            network = ipaddress.ip_network(candidate, strict=False).with_prefixlen
+        except ValueError as exc:
+            raise ConfigError(f"{label}[{index}] 不是有效 CIDR: {candidate}") from exc
+        if network not in seen:
+            seen.add(network)
+            networks.append(network)
+    return networks
+
+
+def normalize_vpn_route_config(config: dict[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(config)
+    mode = str(result.get("route_mode", "all")).strip().lower()
+    if mode not in VPN_ROUTE_MODES:
+        raise ConfigError("路由模式必须是 all、vpn 或 manual")
+    result["route_mode"] = mode
+    result["manual_routes"] = _normalize_network_list(result.get("manual_routes"), "手动包含网段")
+    result["manual_exclude_routes"] = _normalize_network_list(
+        result.get("manual_exclude_routes"), "手动排除网段"
+    )
+    if mode == "manual" and not result["manual_routes"]:
+        raise ConfigError("手动路由模式至少需要一个包含网段")
+    return result
+
+
+def vpn_route_environment(config: dict[str, Any]) -> dict[str, str]:
+    normalized = normalize_vpn_route_config(config)
+    return {
+        "XRAY_VPN_ROUTE_MODE": normalized["route_mode"],
+        "XRAY_VPN_MANUAL_ROUTES": "\n".join(normalized["manual_routes"]),
+        "XRAY_VPN_MANUAL_EXCLUDE_ROUTES": "\n".join(normalized["manual_exclude_routes"]),
+    }
+
+
 def _path_option(value: str, label: str) -> str:
     if not value:
         return ""
@@ -156,6 +213,7 @@ ALLOWED_EXTRA_ARGS = {
 
 
 def build_openconnect_command(config: dict[str, Any]) -> list[str]:
+    config = normalize_vpn_route_config(config)
     server = validate_server(str(config.get("server", "")))
     username = str(config.get("username", "")).strip()
     if not username:
@@ -255,7 +313,13 @@ class ProcessManager:
                 if service.name == "vpn":
                     self.ensure_direct_fallback()
 
-    def _spawn(self, name: str, command: list[str], stdin_text: str | None = None) -> None:
+    def _spawn(
+        self,
+        name: str,
+        command: list[str],
+        stdin_text: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
         service = self.services[name]
         if service.running:
             raise ConfigError(f"{name} 已在运行")
@@ -268,6 +332,7 @@ class ProcessManager:
             text=True,
             bufsize=1,
             start_new_session=True,
+            env=env,
         )
         service.process = process
         service.started_at = time.time()
@@ -282,13 +347,15 @@ class ProcessManager:
 
     def start_vpn(self, password: str = "", otp: str = "") -> None:
         with self.lock:
-            config = read_json(VPN_CONFIG)
+            config = normalize_vpn_route_config(read_json(VPN_CONFIG))
             secret = password or str(config.get("password", ""))
             if not secret:
                 raise ConfigError("请输入 VPN 密码")
             command = build_openconnect_command(config)
             stdin_text = secret + (f"\n{otp}" if otp else "")
-            self._spawn("vpn", command, stdin_text)
+            process_env = os.environ.copy()
+            process_env.update(vpn_route_environment(config))
+            self._spawn("vpn", command, stdin_text, process_env)
 
     def start_xray(self) -> None:
         with self.lock:
@@ -342,7 +409,7 @@ class ProcessManager:
         self.start_xray()
 
     def ensure_direct_fallback(self) -> None:
-        script = "/opt/xray2cisco/scripts/route-guard.sh"
+        script = "/opt/proxy2openconnect/scripts/route-guard.sh"
         if Path(script).exists() and shutil.which("ip"):
             subprocess.run([script], capture_output=True, text=True, timeout=10, check=False)
 

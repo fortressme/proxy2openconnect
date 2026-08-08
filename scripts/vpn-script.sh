@@ -4,7 +4,7 @@ set -eu
 TABLE="${XRAY_VPN_ROUTE_TABLE:-200}"
 MARK="${XRAY_VPN_MARK:-255}"
 PRIORITY="${XRAY_VPN_RULE_PRIORITY:-100}"
-STATE_DIR=/run/xray2cisco
+STATE_DIR=/run/proxy2openconnect
 ROUTES_FILE="$STATE_DIR/split-routes"
 mkdir -p "$STATE_DIR"
 
@@ -38,7 +38,7 @@ enable_direct_fallback() {
 }
 
 install_split_routes() {
-  python3 /opt/xray2cisco/scripts/split_routes.py > "$ROUTES_FILE"
+  python3 /opt/proxy2openconnect/scripts/split_routes.py > "$ROUTES_FILE"
   while IFS=' ' read -r family action network; do
     [ -n "$network" ] || continue
     case "$family:$action" in

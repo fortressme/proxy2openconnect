@@ -13,6 +13,7 @@ ROUTE_GROUPS = (
     (6, "include", "CISCO_IPV6_SPLIT_INC"),
     (6, "exclude", "CISCO_IPV6_SPLIT_EXC"),
 )
+ROUTE_MODES = frozenset({"all", "vpn", "manual"})
 
 
 def collect_split_routes(env: Mapping[str, str]) -> tuple[list[tuple[int, str, str]], list[str]]:
@@ -55,8 +56,50 @@ def collect_split_routes(env: Mapping[str, str]) -> tuple[list[tuple[int, str, s
     return routes, warnings
 
 
+def _collect_manual_group(value: str, action: str) -> tuple[list[tuple[int, str, str]], list[str]]:
+    routes: list[tuple[int, str, str]] = []
+    warnings: list[str] = []
+    for index, item in enumerate(value.splitlines()):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            network = ipaddress.ip_network(candidate, strict=False)
+        except ValueError as exc:
+            warnings.append(f"忽略无效的手动{action}路由[{index}]: {exc}")
+            continue
+        routes.append((network.version, action, network.with_prefixlen))
+    return routes, warnings
+
+
+def collect_route_policy(env: Mapping[str, str]) -> tuple[list[tuple[int, str, str]], list[str]]:
+    mode = env.get("XRAY_VPN_ROUTE_MODE", "all").strip().lower()
+    if mode not in ROUTE_MODES:
+        mode = "all"
+        warnings = ["未知路由模式，已回落到 all"]
+    else:
+        warnings = []
+
+    if mode == "all":
+        routes = [(4, "include", "0.0.0.0/0")]
+        if env.get("INTERNAL_IP6_ADDRESS", "").strip():
+            routes.append((6, "include", "::/0"))
+        return routes, warnings
+    if mode == "vpn":
+        routes, split_warnings = collect_split_routes(env)
+        return routes, warnings + split_warnings
+
+    includes, include_warnings = _collect_manual_group(
+        env.get("XRAY_VPN_MANUAL_ROUTES", ""), "include"
+    )
+    excludes, exclude_warnings = _collect_manual_group(
+        env.get("XRAY_VPN_MANUAL_EXCLUDE_ROUTES", ""), "exclude"
+    )
+    return includes + excludes, warnings + include_warnings + exclude_warnings
+
+
 def main() -> int:
-    routes, warnings = collect_split_routes(os.environ)
+    routes, warnings = collect_route_policy(os.environ)
     for warning in warnings:
         print(f"split-route warning: {warning}", file=sys.stderr)
     for family, action, network in routes:

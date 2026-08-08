@@ -69,7 +69,7 @@ async function refreshStatus() {
     $("#vpn-page-state").textContent = connected ? "已连接" : vpnProcess ? "连接中" : "未连接";
     $("#route-vpn-ip").textContent = connected ? (status.vpn_ip || "隧道在线") : "等待连接";
     $("#vpn-state").textContent = connected ? "Connected" : vpnProcess ? "Connecting" : "Disconnected";
-    $("#vpn-detail").textContent = connected ? `隧道地址 ${status.vpn_ip} · ${vpnRouteCount} 条下发路由` : "企业 VPN 隧道";
+    $("#vpn-detail").textContent = connected ? `隧道地址 ${status.vpn_ip} · ${vpnRouteCount} 条生效路由` : "企业 VPN 隧道";
     $("#vpn-badge").textContent = connected ? "已连接" : vpnProcess ? "连接中" : "未连接";
     $("#vpn-badge").classList.toggle("success", connected);
     $("#xray-state").textContent = xray ? "Online" : "Offline";
@@ -97,7 +97,11 @@ async function loadVpnConfig() {
     if (form.elements[key]) form.elements[key].value = config[key] ?? "";
   }
   for (const key of ["no_dtls","disable_ipv6","autostart"]) form.elements[key].checked = Boolean(config[key]);
+  form.elements.route_mode.value = config.route_mode || "all";
+  form.elements.manual_routes.value = (config.manual_routes || []).join("\n");
+  form.elements.manual_exclude_routes.value = (config.manual_exclude_routes || []).join("\n");
   form.elements.extra_args.value = (config.extra_args || []).join("\n");
+  updateRouteModeFields();
   $("#saved-password-badge").textContent = result.has_password ? "已有保存密码" : "无已存密码";
   $("#saved-password-badge").classList.toggle("success", result.has_password);
 }
@@ -133,10 +137,18 @@ function formToVpnConfig() {
     cafile: form.elements.cafile.value.trim(),
     no_dtls: form.elements.no_dtls.checked,
     disable_ipv6: form.elements.disable_ipv6.checked,
+    route_mode: form.elements.route_mode.value,
+    manual_routes: form.elements.manual_routes.value.split("\n").map(v => v.trim()).filter(Boolean),
+    manual_exclude_routes: form.elements.manual_exclude_routes.value.split("\n").map(v => v.trim()).filter(Boolean),
     reconnect_timeout: Number(form.elements.reconnect_timeout.value || 300),
     extra_args: form.elements.extra_args.value.split("\n").map(v => v.trim()).filter(Boolean),
     autostart: form.elements.autostart.checked,
   };
+}
+
+function updateRouteModeFields() {
+  const manual = $("#vpn-form").elements.route_mode.value === "manual";
+  $$(`[data-manual-route]`).forEach(field => field.classList.toggle("hidden", !manual));
 }
 
 async function saveVpn(includePassword = false) {
@@ -193,10 +205,11 @@ $("#logout-button").addEventListener("click", async () => { try { await api("/ap
 $$(".nav-item").forEach(item => item.addEventListener("click", () => switchPage(item.dataset.page)));
 $$(`[data-go]`).forEach(item => item.addEventListener("click", () => switchPage(item.dataset.go)));
 $("#menu-button").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
+$("#vpn-form").elements.route_mode.addEventListener("change", updateRouteModeFields);
 
 $("#vpn-form").addEventListener("submit", async event => {
   event.preventDefault();
-  try { await saveVpn(false); toast("VPN 配置已保存"); }
+  try { await saveVpn(false); toast("VPN 配置已保存；路由模式将在下次连接时生效"); }
   catch (error) { toast(error.message, "error"); }
 });
 
@@ -211,7 +224,7 @@ $("#vpn-connect").addEventListener("click", async () => {
 });
 
 $("#vpn-disconnect").addEventListener("click", async () => {
-  try { await api("/api/vpn/disconnect", {method:"POST"}); toast("VPN 已断开，Xray 出站已阻断"); refreshStatus(); }
+  try { await api("/api/vpn/disconnect", {method:"POST"}); toast("VPN 已断开，Xray 出站已回落普通网络"); refreshStatus(); }
   catch (error) { toast(error.message, "error"); }
 });
 

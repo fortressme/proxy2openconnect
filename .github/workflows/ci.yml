@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -B -m unittest discover -s tests -v
+
+      - name: Check Python imports and bytecode compilation
+        env:
+          ADMIN_PASSWORD: ci-password-only
+          SESSION_SECRET: 0123456789abcdef0123456789abcdef
+        run: |
+          python -B -c "import app.main"
+          python -B -m compileall -q app scripts tests
+
+      - name: Check shell syntax
+        run: sh -n entrypoint.sh scripts/*.sh
+
+      - name: Validate Compose configuration
+        env:
+          ADMIN_PASSWORD: ci-password-only
+          SESSION_SECRET: 0123456789abcdef0123456789abcdef
+        run: docker compose config --quiet
+
+  container:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build container image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

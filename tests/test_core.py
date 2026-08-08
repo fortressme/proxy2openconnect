@@ -1,7 +1,15 @@
 import copy
 import unittest
 
-from app.core import ConfigError, build_openconnect_command, effective_xray_config, extract_certificate_candidate, validate_server
+from app.core import (
+    ConfigError,
+    build_openconnect_command,
+    effective_xray_config,
+    extract_certificate_candidate,
+    normalize_vpn_route_config,
+    validate_server,
+    vpn_route_environment,
+)
 
 
 class EffectiveXrayConfigTests(unittest.TestCase):
@@ -101,6 +109,39 @@ class OpenConnectCommandTests(unittest.TestCase):
         config["certificate"] = "/etc/shadow"
         with self.assertRaises(ConfigError):
             build_openconnect_command(config)
+
+
+class VpnRouteConfigTests(unittest.TestCase):
+    def test_defaults_to_all_mode(self):
+        config = normalize_vpn_route_config({})
+
+        self.assertEqual(config["route_mode"], "all")
+        self.assertEqual(config["manual_routes"], [])
+
+    def test_normalizes_manual_networks_and_environment(self):
+        config = normalize_vpn_route_config(
+            {
+                "route_mode": "manual",
+                "manual_routes": ["10.20.30.99/24", "fd00::1/48", "10.20.30.0/24"],
+                "manual_exclude_routes": ["10.20.30.128/25"],
+            }
+        )
+
+        self.assertEqual(config["manual_routes"], ["10.20.30.0/24", "fd00::/48"])
+        self.assertEqual(config["manual_exclude_routes"], ["10.20.30.128/25"])
+        self.assertEqual(vpn_route_environment(config)["XRAY_VPN_ROUTE_MODE"], "manual")
+
+    def test_rejects_unknown_mode(self):
+        with self.assertRaises(ConfigError):
+            normalize_vpn_route_config({"route_mode": "unknown"})
+
+    def test_requires_manual_include(self):
+        with self.assertRaises(ConfigError):
+            normalize_vpn_route_config({"route_mode": "manual", "manual_routes": []})
+
+    def test_rejects_invalid_manual_network(self):
+        with self.assertRaises(ConfigError):
+            normalize_vpn_route_config({"route_mode": "manual", "manual_routes": ["invalid"]})
 
 
 class CertificateCandidateTests(unittest.TestCase):

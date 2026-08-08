@@ -2,18 +2,18 @@
 set -eu
 
 umask 077
-mkdir -p "${DATA_DIR:-/data}/xray" "${DATA_DIR:-/data}/vpn" /run/xray2cisco
+mkdir -p "${DATA_DIR:-/data}/xray" "${DATA_DIR:-/data}/vpn" /run/proxy2openconnect
 
 if [ ! -f "${DATA_DIR:-/data}/xray/config.json" ]; then
-  cp /opt/xray2cisco/defaults/xray-config.json "${DATA_DIR:-/data}/xray/config.json"
+  cp /opt/proxy2openconnect/defaults/xray-config.json "${DATA_DIR:-/data}/xray/config.json"
 fi
 
 if [ ! -f "${DATA_DIR:-/data}/vpn/config.json" ]; then
-  cp /opt/xray2cisco/defaults/vpn-config.json "${DATA_DIR:-/data}/vpn/config.json"
+  cp /opt/proxy2openconnect/defaults/vpn-config.json "${DATA_DIR:-/data}/vpn/config.json"
 fi
 
 chmod 600 "${DATA_DIR:-/data}/xray/config.json" "${DATA_DIR:-/data}/vpn/config.json"
-/opt/xray2cisco/scripts/route-guard.sh
+/opt/proxy2openconnect/scripts/route-guard.sh
 
 exec "$@"
 

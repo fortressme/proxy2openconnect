@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.split_routes import collect_split_routes
+from scripts.split_routes import collect_route_policy, collect_split_routes
 
 
 class SplitRouteTests(unittest.TestCase):
@@ -63,9 +63,77 @@ class SplitRouteTests(unittest.TestCase):
         self.assertEqual(len(warnings), 2)
 
     def test_does_not_invent_a_default_route(self):
-        routes, warnings = collect_split_routes({"INTERNAL_IP4_ADDRESS": "10.10.235.227"})
+        routes, warnings = collect_split_routes({"INTERNAL_IP4_ADDRESS": "192.0.2.10"})
 
         self.assertEqual(routes, [])
+        self.assertEqual(warnings, [])
+
+    def test_all_mode_is_the_default(self):
+        routes, warnings = collect_route_policy({})
+
+        self.assertEqual(routes, [(4, "include", "0.0.0.0/0")])
+        self.assertEqual(warnings, [])
+
+    def test_all_mode_adds_ipv6_when_available(self):
+        routes, _ = collect_route_policy({"XRAY_VPN_ROUTE_MODE": "all", "INTERNAL_IP6_ADDRESS": "fd00::2"})
+
+        self.assertEqual(routes, [(4, "include", "0.0.0.0/0"), (6, "include", "::/0")])
+
+    def test_vpn_mode_uses_downloaded_routes(self):
+        routes, warnings = collect_route_policy(
+            {
+                "XRAY_VPN_ROUTE_MODE": "vpn",
+                "CISCO_SPLIT_INC": "1",
+                "CISCO_SPLIT_INC_0_ADDR": "10.0.0.0",
+                "CISCO_SPLIT_INC_0_MASKLEN": "8",
+            }
+        )
+
+        self.assertEqual(routes, [(4, "include", "10.0.0.0/8")])
+        self.assertEqual(warnings, [])
+
+    def test_vpn_mode_preserves_secured_routes_with_default_exclude(self):
+        routes, warnings = collect_route_policy(
+            {
+                "XRAY_VPN_ROUTE_MODE": "vpn",
+                "CISCO_SPLIT_INC": "2",
+                "CISCO_SPLIT_INC_0_ADDR": "10.0.0.0",
+                "CISCO_SPLIT_INC_0_MASKLEN": "8",
+                "CISCO_SPLIT_INC_1_ADDR": "192.0.2.15",
+                "CISCO_SPLIT_INC_1_MASKLEN": "32",
+                "CISCO_SPLIT_EXC": "1",
+                "CISCO_SPLIT_EXC_0_ADDR": "0.0.0.0",
+                "CISCO_SPLIT_EXC_0_MASKLEN": "0",
+            }
+        )
+
+        self.assertEqual(
+            routes,
+            [
+                (4, "include", "10.0.0.0/8"),
+                (4, "include", "192.0.2.15/32"),
+                (4, "exclude", "0.0.0.0/0"),
+            ],
+        )
+        self.assertEqual(warnings, [])
+
+    def test_manual_mode_uses_configured_routes(self):
+        routes, warnings = collect_route_policy(
+            {
+                "XRAY_VPN_ROUTE_MODE": "manual",
+                "XRAY_VPN_MANUAL_ROUTES": "10.0.1.9/24\nfd00:1::1/48",
+                "XRAY_VPN_MANUAL_EXCLUDE_ROUTES": "10.0.1.128/25",
+            }
+        )
+
+        self.assertEqual(
+            routes,
+            [
+                (4, "include", "10.0.1.0/24"),
+                (6, "include", "fd00:1::/48"),
+                (4, "exclude", "10.0.1.128/25"),
+            ],
+        )
         self.assertEqual(warnings, [])
 
 

@@ -23,6 +23,7 @@ from .core import (
     atomic_write_json,
     build_openconnect_command,
     manager,
+    normalize_vpn_route_config,
     read_json,
     validate_xray_shape,
 )
@@ -115,7 +116,7 @@ async def lifespan(_: FastAPI):
     manager.stop("vpn")
 
 
-app = FastAPI(title="Xray → Cisco VPN Gateway", version=APP_VERSION, lifespan=lifespan)
+app = FastAPI(title="proxy2openconnect", version=APP_VERSION, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -239,7 +240,7 @@ def xray_action(action: str, _: str = Depends(require_user)):
 
 @app.get("/api/vpn/config")
 def get_vpn_config(_: str = Depends(require_user)):
-    config = read_json(VPN_CONFIG)
+    config = normalize_vpn_route_config(read_json(VPN_CONFIG))
     has_password = bool(config.pop("password", ""))
     return {"config": config, "has_password": has_password}
 
@@ -250,6 +251,7 @@ def put_vpn_config(body: VpnConfigBody, _: str = Depends(require_user)):
     config = body.config.copy()
     supplied_password = str(config.pop("password", ""))
     config["password"] = supplied_password if body.save_password else current.get("password", "")
+    config = normalize_vpn_route_config(config)
     build_openconnect_command(config)
     atomic_write_json(VPN_CONFIG, config)
     return {"ok": True}

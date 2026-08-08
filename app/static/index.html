@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Xray → Cisco VPN Gateway</title>
+  <title>proxy2openconnect</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -30,7 +30,7 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark small" aria-hidden="true"><span></span><span></span><span></span></div>
-        <div><strong>RouteDeck</strong><small>Xray · AnyConnect</small></div>
+        <div><strong>proxy2openconnect</strong><small>Xray · OpenConnect</small></div>
       </div>
       <nav aria-label="主要导航">
         <button class="nav-item active" data-page="overview"><i>◫</i>运行总览</button>
@@ -56,7 +56,7 @@
           <div>
             <p class="eyebrow">TRAFFIC PATH</p>
             <h1>一条可见、可控的<br><span>企业网络出口。</span></h1>
-            <p class="hero-copy">代理请求进入 Xray，经策略标记后只允许通过 AnyConnect 隧道离开容器。</p>
+            <p class="hero-copy">代理请求进入 Xray，再按当前路由模式选择 AnyConnect 隧道或普通网络出口。</p>
           </div>
           <div class="route-map" aria-label="Xray 到 VPN 的流量路径">
             <div class="route-node"><small>INBOUND</small><strong>SOCKS / HTTP</strong><span>1080 · 8080</span></div>
@@ -68,7 +68,7 @@
         <div class="metric-grid">
           <article class="metric-card"><div class="metric-head"><span>Xray Core</span><span id="xray-badge" class="badge">已停止</span></div><strong id="xray-state">Offline</strong><p>入站代理与流量标记</p><button id="overview-xray-action" class="button secondary">启动 Xray</button></article>
           <article class="metric-card"><div class="metric-head"><span>AnyConnect Tunnel</span><span id="vpn-badge" class="badge">未连接</span></div><strong id="vpn-state">Disconnected</strong><p id="vpn-detail">企业 VPN 隧道</p><button class="button secondary" data-go="vpn">管理连接</button></article>
-          <article class="metric-card"><div class="metric-head"><span>Egress Policy</span><span class="badge success">分流</span></div><strong>VPN Split Routes</strong><p>仅 VPN 下发网段进入隧道</p><div class="mini-rule"><code>split include</code><span>→</span><code>tun0</code></div></article>
+          <article class="metric-card"><div class="metric-head"><span>Egress Policy</span><span class="badge success">三模式</span></div><strong>VPN Route Policy</strong><p>全部接管 / VPN 下发 / 手动网段</p><div class="mini-rule"><code>route mode</code><span>→</span><code>tun0</code></div></article>
         </div>
 
         <div class="notice"><span>i</span><p><strong>当前默认配置已开启代理认证。</strong>首次使用前请在 Xray 配置中修改 <code>change-me</code> 密码，并限制宿主机端口的可访问来源。</p></div>
@@ -86,6 +86,19 @@
               <label class="wide">服务器证书指纹<input name="servercert" placeholder="sha256:...（可选）"></label>
               <label class="wide">User-Agent<input name="useragent"></label>
               <label>重连窗口（秒）<input name="reconnect_timeout" type="number" min="0" max="86400" value="300"></label>
+              <label class="wide">路由模式
+                <select name="route_mode">
+                  <option value="all">接管全部（默认）</option>
+                  <option value="vpn">使用 VPN 下发路由</option>
+                  <option value="manual">使用手动配置路由</option>
+                </select>
+              </label>
+              <label class="wide hidden" data-manual-route>手动包含网段
+                <textarea name="manual_routes" rows="4" placeholder="每行一个 CIDR，例如：&#10;10.0.0.0/8&#10;192.168.50.10/32"></textarea>
+              </label>
+              <label class="wide hidden" data-manual-route>手动排除网段
+                <textarea name="manual_exclude_routes" rows="3" placeholder="可选，每行一个 CIDR；更具体的排除网段将走普通网络"></textarea>
+              </label>
               <label>CA 文件路径<input name="cafile" placeholder="/data/certs/ca.pem"></label>
               <label>客户端证书路径<input name="certificate" placeholder="/data/certs/client.p12"></label>
               <label>私钥路径<input name="sslkey" placeholder="/data/certs/client.key"></label>

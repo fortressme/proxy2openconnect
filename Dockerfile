@@ -11,9 +11,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     XRAY_BINARY=/usr/local/bin/xray \
     OPENCONNECT_BINARY=/usr/sbin/openconnect
 
-LABEL org.opencontainers.image.title="xray2cisco" \
+LABEL org.opencontainers.image.title="proxy2openconnect" \
       org.opencontainers.image.description="Xray inbound gateway with Cisco AnyConnect-compatible VPN egress" \
-      org.opencontainers.image.version="${APP_VERSION}"
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.source="https://github.com/fortressme/proxy2openconnect" \
+      org.opencontainers.image.url="https://github.com/fortressme/proxy2openconnect" \
+      org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -23,7 +26,7 @@ RUN apt-get update \
 COPY --from=xray /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray /usr/local/share/xray /usr/local/share/xray
 
-WORKDIR /opt/xray2cisco
+WORKDIR /opt/proxy2openconnect
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -33,8 +36,8 @@ COPY scripts ./scripts
 COPY defaults ./defaults
 COPY entrypoint.sh ./entrypoint.sh
 
-RUN chmod 0755 /opt/xray2cisco/entrypoint.sh /opt/xray2cisco/scripts/*.sh \
-    && mkdir -p /data /run/xray2cisco
+RUN chmod 0755 /opt/proxy2openconnect/entrypoint.sh /opt/proxy2openconnect/scripts/*.sh \
+    && mkdir -p /data /run/proxy2openconnect
 
 EXPOSE 8000 1080 8080
 VOLUME ["/data"]
@@ -42,5 +45,5 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" || exit 1
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/xray2cisco/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/proxy2openconnect/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

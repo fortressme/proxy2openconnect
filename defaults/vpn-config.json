@@ -10,6 +10,9 @@
   "cafile": "",
   "no_dtls": false,
   "disable_ipv6": true,
+  "route_mode": "all",
+  "manual_routes": [],
+  "manual_exclude_routes": [],
   "reconnect_timeout": 300,
   "extra_args": [
     "--os=win",
