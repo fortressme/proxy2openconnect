@@ -291,9 +291,7 @@ function renderTargetHistory(history) {
 async function loadTargetHistory() {
   try {
     renderTargetHistory(await api("/api/statistics/targets"));
-  } catch (error) {
-    if (!$("#app-shell").classList.contains("hidden")) console.debug(error);
-  }
+  } catch (_) {}
 }
 
 function updateOverviewStatistics(status) {
@@ -379,9 +377,7 @@ async function refreshStatus() {
       $("#certificate-host").textContent = candidate.host;
       $("#certificate-pin").textContent = candidate.pin;
     }
-  } catch (error) {
-    if (!$("#app-shell").classList.contains("hidden")) console.debug(error);
-  }
+  } catch (_) {}
 }
 
 async function loadVpnConfig() {

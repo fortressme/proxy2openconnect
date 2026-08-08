@@ -56,7 +56,6 @@ CERT_PIN_PATTERN = re.compile(r'--servercert\s+(pin-sha256:[A-Za-z0-9+/]{43}=)')
 
 
 def extract_certificate_candidate(lines: list[str]) -> dict[str, str] | None:
-    """Extract the newest OpenConnect certificate pin together with its gateway host."""
     current_host: str | None = None
     candidate: dict[str, str] | None = None
     for line in lines:
@@ -137,7 +136,6 @@ def validate_xray_shape(config: dict[str, Any]) -> None:
 
 
 def xray_uses_default_password(config: dict[str, Any]) -> bool:
-    """Detect the shipped placeholder password within Xray inbound settings."""
     def contains_placeholder(value: Any) -> bool:
         if isinstance(value, dict):
             for key, item in value.items():
@@ -195,7 +193,6 @@ def parse_trusted_origins(value: str) -> frozenset[str]:
 
 
 def validate_keepalive_url(value: str) -> str:
-    """Validate a user-configured HTTP(S) target used to generate tunnel traffic."""
     candidate = value.strip()
     if not candidate:
         raise ConfigError("启用网址保活时必须填写保活网址")
@@ -523,7 +520,6 @@ class ServiceProcess:
 
 
 def _read_interface_statistics(interface: str = "tun0") -> dict[str, int | bool]:
-    """Read Linux network-interface counters without invoking another process."""
     statistics_dir = Path("/sys/class/net") / interface / "statistics"
     result: dict[str, int | bool] = {
         "available": statistics_dir.exists(),
@@ -557,7 +553,6 @@ XRAY_PROTOCOL_LABELS = {
 
 
 def _xray_inbound_overview(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Return display-safe protocol and endpoint details for configured Xray inbounds."""
     if config is None:
         try:
             config = read_json(XRAY_CONFIG)
@@ -614,7 +609,6 @@ def _decode_proc_endpoint(value: str, ipv6: bool) -> tuple[str, int]:
 
 
 def _process_socket_inodes(pid: int | None) -> set[str]:
-    """Return socket inode numbers currently owned by a Linux process."""
     if not pid:
         return set()
     inodes: set[str] = set()
@@ -638,7 +632,6 @@ def _format_endpoint(address: str, port: int) -> str:
 
 
 def _xray_tcp_connections(pid: int | None) -> list[dict[str, Any]]:
-    """Return established TCP sockets owned by the current Xray process."""
     socket_inodes = _process_socket_inodes(pid)
     connections: list[dict[str, Any]] = []
     if not socket_inodes:
@@ -672,7 +665,6 @@ def _xray_tcp_connections(pid: int | None) -> list[dict[str, Any]]:
 def _summarize_xray_connections(
     connections: list[dict[str, Any]], inbound_ports: list[int] | None = None
 ) -> dict[str, Any]:
-    """Separate proxy clients from the remote targets reached by Xray."""
     inbound_ports = _xray_inbound_ports() if inbound_ports is None else inbound_ports
     client_counts: Counter[str] = Counter()
     target_counts: Counter[tuple[str, int]] = Counter()
@@ -703,7 +695,7 @@ def _summarize_xray_connections(
         )
 
     return {
-        # Keep the original client-oriented fields for API compatibility.
+        # Retain legacy client fields for API compatibility.
         "active": sum(client_counts.values()),
         "unique_addresses": len(client_counts),
         "inbound_ports": inbound_ports,
@@ -722,12 +714,7 @@ def _summarize_xray_connections(
     }
 
 
-def _active_xray_connections(pid: int | None) -> dict[str, Any]:
-    return _summarize_xray_connections(_xray_tcp_connections(pid))
-
-
 def _vpn_statistics_profile(config: dict[str, Any]) -> dict[str, str] | None:
-    """Create a stable, non-secret identifier for one configured VPN profile."""
     try:
         parsed = urlparse(validate_server(str(config.get("server", ""))))
     except ConfigError:
@@ -944,7 +931,7 @@ class ProcessManager:
                 if service.name == "vpn":
                     if VPN_CONNECTED.exists():
                         self._vpn_ever_connected = True
-                        # An OTP is normally single-use and must never be replayed.
+                        # Never replay a single-use OTP.
                         self._vpn_otp = ""
                         self._vpn_reconnect_attempts = 0
                     self.ensure_direct_fallback()
@@ -1008,7 +995,7 @@ class ProcessManager:
             self._keepalive_wakeup.set()
 
     def _start_vpn_attempt(self, config: dict[str, Any], secret: str, otp: str = "") -> None:
-        # Restore the pre-tunnel resolver before looking up the public VPN gateway.
+        # Restore pre-tunnel DNS before resolving the public gateway.
         self.ensure_direct_fallback()
         command = build_openconnect_command(config)
         gateway = resolve_vpn_gateway(
