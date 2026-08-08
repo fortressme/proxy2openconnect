@@ -1,6 +1,5 @@
 # proxy2openconnect
 
-[![CI](https://github.com/fortressme/proxy2openconnect/actions/workflows/ci.yml/badge.svg)](https://github.com/fortressme/proxy2openconnect/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 `proxy2openconnect` 是一个运行在 Docker 中的代理网关：客户端连接 Xray 提供的 SOCKS5 或 HTTP 代理，选中的出站流量再通过 OpenConnect 建立的 Cisco AnyConnect 兼容 VPN 隧道转发。项目同时提供一个用于配置 VPN、Xray 和查看运行日志的 Web 控制台。
