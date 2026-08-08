@@ -59,6 +59,31 @@ function setDot(selector, state, pending = false) {
   node.classList.toggle("amber", pending && !state);
 }
 
+function updateRouteMap(status, connected, vpnProcess, reconnectPending) {
+  const inbounds = Array.isArray(status.xray_inbounds) ? status.xray_inbounds : [];
+  const labels = [...new Set(inbounds.map(inbound => inbound.label).filter(Boolean))];
+  const ports = inbounds.map(inbound => inbound.port).filter(port => port !== null && port !== undefined && port !== "");
+  const protocolText = labels.length ? labels.join(" / ") : "未配置入站";
+  const portText = ports.length ? ports.join(" · ") : "—";
+  $("#route-inbound-protocols").textContent = protocolText;
+  $("#route-inbound-ports").textContent = portText;
+  const inboundNode = $("#route-inbound-node");
+  inboundNode.classList.toggle("dense", labels.length > 2 || protocolText.length > 18);
+  inboundNode.title = inbounds.length
+    ? inbounds.map(inbound => `${inbound.label} ${inbound.listen ? `${inbound.listen}:` : ""}${inbound.port ?? ""}`).join("\n")
+    : "当前 Xray 配置没有可显示的 inbound";
+
+  $("#route-vpn-node").classList.toggle("connected", connected);
+  $("#route-line").classList.toggle("active", connected);
+  $("#route-vpn-ip").textContent = connected
+    ? (status.vpn_ip || "隧道在线")
+    : vpnProcess
+      ? "正在建立隧道"
+      : reconnectPending
+        ? "等待重连"
+        : "未连接";
+}
+
 function formatBytes(value) {
   const bytes = Math.max(0, Number(value) || 0);
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -331,11 +356,11 @@ async function refreshStatus() {
     const activeDns = status.active_dns || [];
     const usesDefaultProxyPassword = status.security?.default_proxy_password === true;
     $("#overview-security-notice").classList.toggle("hidden", !usesDefaultProxyPassword);
+    updateRouteMap(status, connected, vpnProcess, reconnectPending);
     setDot("#top-vpn-dot", connected, vpnProcess);
     setDot("#vpn-page-dot", connected, vpnProcess);
     $("#top-vpn-text").textContent = connected ? "VPN 已连接" : vpnProcess ? "VPN 连接中" : reconnectPending ? "VPN 等待重连" : "VPN 未连接";
     $("#vpn-page-state").textContent = connected ? "已连接" : vpnProcess ? "连接中" : reconnectPending ? "等待重连" : "未连接";
-    $("#route-vpn-ip").textContent = connected ? (status.vpn_ip || "隧道在线") : "等待连接";
     $("#vpn-state").textContent = connected ? "Connected" : vpnProcess ? "Connecting" : reconnectPending ? "Reconnecting" : "Disconnected";
     $("#vpn-detail").textContent = connected ? `隧道地址 ${status.vpn_ip} · ${vpnRouteCount} 条生效路由` : reconnectPending ? "短暂中断，等待自动重连" : "企业 VPN 隧道";
     $("#vpn-badge").textContent = connected ? "已连接" : vpnProcess ? "连接中" : reconnectPending ? "等待重连" : "未连接";

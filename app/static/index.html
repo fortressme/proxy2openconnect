@@ -61,14 +61,14 @@
       <section id="page-overview" class="page active">
         <div class="hero-panel">
           <div>
-            <p class="eyebrow">TRAFFIC PATH</p>
-            <h1>一条可见、可控的<br><span>企业网络出口。</span></h1>
-            <p class="hero-copy">代理请求进入 Xray，再按当前路由模式选择 AnyConnect 隧道或普通网络出口。</p>
+            <p class="eyebrow">EGRESS CONTROL PATH</p>
+            <h1>统一代理入口，<br><span>受控网络出口。</span></h1>
+            <p class="hero-copy">流量由 Xray 统一接入，并依据当前路由策略经 AnyConnect 隧道或本地网络安全转发。</p>
           </div>
           <div class="route-map" aria-label="Xray 到 VPN 的流量路径">
-            <div class="route-node"><small>INBOUND</small><strong>SOCKS / HTTP</strong><span>1080 · 8080</span></div>
-            <div class="route-line"><i></i><b>MARK 255</b></div>
-            <div class="route-node accent"><small>EGRESS</small><strong>CISCO VPN</strong><span id="route-vpn-ip">等待连接</span></div>
+            <div id="route-inbound-node" class="route-node"><small>INBOUND</small><strong id="route-inbound-protocols">读取配置…</strong><span id="route-inbound-ports">—</span></div>
+            <div id="route-line" class="route-line"><i></i><b>MARK 255</b></div>
+            <div id="route-vpn-node" class="route-node vpn-node"><small>EGRESS</small><strong>CISCO VPN</strong><span id="route-vpn-ip">未连接</span></div>
           </div>
         </div>
 

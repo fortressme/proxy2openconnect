@@ -544,16 +544,55 @@ def _read_interface_statistics(interface: str = "tun0") -> dict[str, int | bool]
     return result
 
 
-def _xray_inbound_ports() -> list[int]:
-    try:
-        config = read_json(XRAY_CONFIG)
-    except ConfigError:
-        return []
-    ports: set[int] = set()
+XRAY_PROTOCOL_LABELS = {
+    "dokodemo-door": "DOKODEMO",
+    "http": "HTTP",
+    "shadowsocks": "SHADOWSOCKS",
+    "socks": "SOCKS",
+    "trojan": "TROJAN",
+    "vless": "VLESS",
+    "vmess": "VMESS",
+    "wireguard": "WIREGUARD",
+}
+
+
+def _xray_inbound_overview(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Return display-safe protocol and endpoint details for configured Xray inbounds."""
+    if config is None:
+        try:
+            config = read_json(XRAY_CONFIG)
+        except ConfigError:
+            return []
+    overview: list[dict[str, Any]] = []
     for inbound in config.get("inbounds", []):
         if not isinstance(inbound, dict):
             continue
+        protocol = str(inbound.get("protocol", "")).strip().lower()
+        if not protocol:
+            continue
         port = inbound.get("port")
+        if not isinstance(port, (int, str)) or isinstance(port, bool):
+            port = None
+        elif isinstance(port, str):
+            port = port.strip() or None
+        overview.append(
+            {
+                "protocol": protocol,
+                "label": XRAY_PROTOCOL_LABELS.get(
+                    protocol, protocol.replace("-", " ").upper()
+                ),
+                "port": port,
+                "listen": str(inbound.get("listen", "")).strip(),
+                "tag": str(inbound.get("tag", "")).strip(),
+            }
+        )
+    return overview
+
+
+def _xray_inbound_ports() -> list[int]:
+    ports: set[int] = set()
+    for inbound in _xray_inbound_overview():
+        port = inbound["port"]
         if isinstance(port, int) and 0 < port <= 65535:
             ports.add(port)
         elif isinstance(port, str) and port.isdigit() and 0 < int(port) <= 65535:
@@ -1333,6 +1372,7 @@ class ProcessManager:
             "vpn_connected": bool(vpn_ip and services["vpn"]["running"]),
             "vpn_ip": vpn_ip,
             "vpn_routes": vpn_routes,
+            "xray_inbounds": _xray_inbound_overview(),
             "active_dns": active_dns,
             "route_table": ROUTE_TABLE,
             "mark": XRAY_MARK,
