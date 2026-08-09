@@ -18,6 +18,7 @@
   "reconnect_timeout": 300,
   "auto_reconnect": true,
   "auto_reconnect_interval": 10,
+  "auto_reconnect_attempts": 5,
   "keepalive_enabled": false,
   "keepalive_url": "",
   "keepalive_interval": 300,

@@ -191,8 +191,9 @@
                 <div class="reliability-grid">
                   <label>OpenConnect 重连窗口（秒）<input name="reconnect_timeout" type="number" min="0" max="86400" value="300"></label>
                   <label>进程重连间隔（秒）<input name="auto_reconnect_interval" type="number" min="1" max="3600" value="10"></label>
+                  <label>自动重连尝试次数<input name="auto_reconnect_attempts" type="number" min="1" max="100" value="5"><small class="field-hint">连续失败达到此次数后停止重试；重新发起连接时重新计数。</small></label>
                   <label>目标统计保留天数<input name="statistics_retention_days" type="number" min="1" max="365" value="30"><small class="field-hint">按当前 VPN 配置独立统计，过期的每日日志将自动清理。</small></label>
-                  <label class="toggle-field"><input type="checkbox" name="auto_reconnect" checked><span><strong>会话退出后自动重连</strong><small>最多连续尝试 5 次</small></span></label>
+                  <label class="toggle-field"><input type="checkbox" name="auto_reconnect" checked><span><strong>会话退出后自动重连</strong><small>按设置的次数和间隔进行尝试</small></span></label>
                   <label class="toggle-field"><input type="checkbox" name="keepalive_enabled"><span><strong>启用网址保活</strong><small>定时模拟一次 Web 访问</small></span></label>
                   <label class="wide" data-keepalive-field>保活模拟访问地址
                     <input name="keepalive_url" type="text" inputmode="url" autocomplete="url" aria-describedby="keepalive-url-hint" placeholder="https://intranet.example.com/ping 或 intranet.example.com/ping">

@@ -44,7 +44,8 @@ VPN_SCRIPT = "/opt/proxy2openconnect/scripts/vpn-script.sh"
 VPN_ROUTE_MODES = frozenset({"all", "vpn", "manual"})
 VPN_DNS_MODES = frozenset({"system", "vpn", "manual"})
 MAX_MANUAL_ROUTES = 4096
-MAX_AUTO_RECONNECT_ATTEMPTS = 5
+DEFAULT_AUTO_RECONNECT_ATTEMPTS = 5
+MAX_AUTO_RECONNECT_ATTEMPTS = 100
 MAX_HISTORY_TARGETS = 1000
 
 
@@ -330,6 +331,17 @@ def normalize_vpn_route_config(config: dict[str, Any]) -> dict[str, Any]:
     if reconnect_interval < 1 or reconnect_interval > 3600:
         raise ConfigError("自动重连间隔必须在 1 到 3600 秒之间")
     result["auto_reconnect_interval"] = reconnect_interval
+    try:
+        reconnect_attempts = int(
+            result.get("auto_reconnect_attempts", DEFAULT_AUTO_RECONNECT_ATTEMPTS)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("自动重连尝试次数必须是整数") from exc
+    if reconnect_attempts < 1 or reconnect_attempts > MAX_AUTO_RECONNECT_ATTEMPTS:
+        raise ConfigError(
+            f"自动重连尝试次数必须在 1 到 {MAX_AUTO_RECONNECT_ATTEMPTS} 次之间"
+        )
+    result["auto_reconnect_attempts"] = reconnect_attempts
 
     result["keepalive_enabled"] = bool(result.get("keepalive_enabled", False))
     keepalive_url = str(result.get("keepalive_url", "")).strip()
@@ -1319,7 +1331,6 @@ class ProcessManager:
             self._keepalive_wakeup.set()
 
     def _start_vpn_attempt(self, config: dict[str, Any], secret: str, otp: str = "") -> None:
-        # 解析 VPN 网关前先恢复连接前 DNS。
         self.ensure_direct_fallback()
         command = build_openconnect_command(config)
         gateway = resolve_vpn_gateway(
@@ -1347,10 +1358,11 @@ class ProcessManager:
         if self._vpn_requires_otp:
             self._append(self.services["vpn"], "会话需要新的 OTP，已跳过自动重连")
             return
-        if self._vpn_reconnect_attempts >= MAX_AUTO_RECONNECT_ATTEMPTS:
+        max_attempts = config["auto_reconnect_attempts"]
+        if self._vpn_reconnect_attempts >= max_attempts:
             self._append(
                 self.services["vpn"],
-                f"自动重连连续失败 {MAX_AUTO_RECONNECT_ATTEMPTS} 次，已停止重试",
+                f"自动重连连续失败 {max_attempts} 次，已停止重试",
             )
             return
         interval = config["auto_reconnect_interval"]
@@ -1374,12 +1386,19 @@ class ProcessManager:
                     if not current["auto_reconnect"]:
                         self._append(self.services["vpn"], "自动重连已在配置中关闭")
                         return
+                    max_attempts = current["auto_reconnect_attempts"]
+                    if self._vpn_reconnect_attempts >= max_attempts:
+                        self._append(
+                            self.services["vpn"],
+                            f"自动重连连续失败 {max_attempts} 次，已停止重试",
+                        )
+                        return
                     self._vpn_reconnect_attempts += 1
                     self._vpn_reconnect_attempts_total += 1
                     self._last_vpn_retry_at = time.time()
                     self._append(
                         self.services["vpn"],
-                        f"正在自动重连（{self._vpn_reconnect_attempts}/{MAX_AUTO_RECONNECT_ATTEMPTS}）…",
+                        f"正在自动重连（{self._vpn_reconnect_attempts}/{max_attempts}）…",
                     )
                     self._start_vpn_attempt(current, self._vpn_password, self._vpn_otp)
                 except Exception as exc:

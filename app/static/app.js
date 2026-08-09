@@ -484,7 +484,7 @@ async function loadVpnConfig() {
   const result = await api("/api/vpn/config");
   const form = $("#vpn-form");
   const config = result.config;
-  for (const key of ["server","username","authgroup","servercert","useragent","certificate","sslkey","cafile","reconnect_timeout","auto_reconnect_interval","keepalive_url","keepalive_interval","statistics_retention_days"]) {
+  for (const key of ["server","username","authgroup","servercert","useragent","certificate","sslkey","cafile","reconnect_timeout","auto_reconnect_interval","auto_reconnect_attempts","keepalive_url","keepalive_interval","statistics_retention_days"]) {
     if (form.elements[key]) form.elements[key].value = config[key] ?? "";
   }
   for (const key of ["no_dtls","disable_ipv6","auto_reconnect","keepalive_enabled","autostart"]) form.elements[key].checked = Boolean(config[key]);
@@ -544,6 +544,7 @@ function formToVpnConfig() {
     reconnect_timeout: Number(form.elements.reconnect_timeout.value || 300),
     auto_reconnect: form.elements.auto_reconnect.checked,
     auto_reconnect_interval: Number(form.elements.auto_reconnect_interval.value || 10),
+    auto_reconnect_attempts: Number(form.elements.auto_reconnect_attempts.value || 5),
     keepalive_enabled: form.elements.keepalive_enabled.checked,
     keepalive_url: form.elements.keepalive_url.value.trim(),
     keepalive_interval: Number(form.elements.keepalive_interval.value || 300),
