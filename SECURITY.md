@@ -31,7 +31,7 @@
 - 优先使用企业 CA；使用自签名证书时，确认来源后再固定公钥指纹。
 - 将 `data/vpn/config.json`、客户端证书和私钥作为密钥材料保护。
 - 容器只需要 `/dev/net/tun` 与 `NET_ADMIN`，不应授予 `privileged`。
-- 默认是 fail-open：VPN 断开后，新代理连接可能经普通网络发出。需要防泄漏边界时，请在宿主机或上层防火墙实施 fail-closed 策略。
+- “保持不变”联动模式是 fail-open：VPN 断开后，新代理连接可能经普通网络发出。“停止 Xray”与“阻止特定网址”可用于下游故障切换，但不能替代宿主机或上层防火墙的 fail-closed 策略。
 
 ## Sensitive data
 

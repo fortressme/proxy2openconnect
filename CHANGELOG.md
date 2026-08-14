@@ -4,6 +4,7 @@
 
 ## [Unreleased]
 
+- 增加 Xray 与 VPN 断线联动：可在 VPN 离线时停止并自动恢复 Xray、临时阻止指定域名以触发 Mihomo fallback，或保持原有直连回落行为。
 - 增加项目 Logo、浏览器 favicon、Apple Touch/Web App 图标，并将品牌标识应用到登录页、控制台侧栏和 README。
 - 增加 VPN 会话退出后的自动重连（可在 Web 控制台配置连续尝试次数），以及可配置 HTTP(S) 地址和间隔的网址保活。
 - 增加全局 DNS 来源选择、手动 DNS 服务器配置、系统解析器恢复和 DNS 专用 VPN 路由。

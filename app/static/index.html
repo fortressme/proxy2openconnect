@@ -260,6 +260,19 @@
 
       <section id="page-xray" class="page">
         <div class="section-intro"><div><p class="eyebrow">JSON CONFIGURATION</p><h1>Xray 配置</h1><p>保存的是原始配置；运行时只为标签为 <code>vpn-out</code> 的 outbound 注入 <code>sockopt.mark = 255</code>。</p></div><div class="editor-actions"><button id="xray-validate" class="button secondary">校验配置</button><button id="xray-save" class="button primary">保存并重启</button></div></div>
+        <div class="panel xray-link-card">
+          <div class="panel-title"><div><p class="eyebrow">VPN STATE LINK</p><h3>VPN 断线联动</h3><p class="muted">选择 VPN 隧道离线时 Xray 的处理方式；VPN 恢复后会自动撤销临时动作。</p></div><span class="badge">运行时生效</span></div>
+          <fieldset class="xray-link-options">
+            <legend class="sr-only">VPN 断线联动方式</legend>
+            <label class="xray-link-option"><input type="radio" name="xray_link_mode" value="stop_xray"><span><strong>断开 Xray</strong><small>VPN 离线时停止 Xray，恢复后自动启动；适合让下游立即判定节点不可用。</small></span></label>
+            <label class="xray-link-option"><input type="radio" name="xray_link_mode" value="block_sites"><span><strong>阻止特定网址</strong><small>保持代理在线，但拒绝所列域名；可用于使 Mihomo 健康检查失败并 fallback。</small></span></label>
+            <label class="xray-link-option"><input type="radio" name="xray_link_mode" value="unchanged" checked><span><strong>保持不变</strong><small>沿用当前行为，VPN 离线后 Xray 流量可回落到普通网络。</small></span></label>
+          </fieldset>
+          <label id="xray-blocked-sites-field" class="xray-blocked-sites hidden">VPN 离线时阻止的域名
+            <textarea id="xray-blocked-sites" rows="4" placeholder="每行一个域名或网址，例如：&#10;www.gstatic.com&#10;https://intranet.example.com/health&#10;*.example.org"></textarea>
+            <small class="field-hint">网址会提取主机名；普通域名仅精确匹配，使用 <code>*.example.org</code> 可包含其子域名。仅影响新建连接。</small>
+          </label>
+        </div>
         <div class="editor-shell">
           <div class="editor-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>/data/xray/config.json</span><span id="editor-status">JSON</span></div>
           <div class="editor-wrap"><pre id="line-numbers" aria-hidden="true"></pre><textarea id="xray-editor" spellcheck="false" aria-label="Xray JSON 配置"></textarea></div>

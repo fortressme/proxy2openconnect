@@ -20,13 +20,16 @@ from .core import (
     ConfigError,
     VPN_CONFIG,
     XRAY_CONFIG,
+    XRAY_LINK_CONFIG,
     atomic_write_json,
     build_openconnect_command,
     manager,
     normalize_http_origin,
     normalize_vpn_route_config,
+    normalize_xray_link_config,
     parse_trusted_origins,
     read_json,
+    read_xray_link_config,
     validate_xray_shape,
 )
 
@@ -106,6 +109,11 @@ class ConnectBody(BaseModel):
 class VpnConfigBody(BaseModel):
     config: dict[str, Any]
     save_password: bool = False
+
+
+class XrayValidationBody(BaseModel):
+    config: dict[str, Any]
+    link: dict[str, Any]
 
 
 @asynccontextmanager
@@ -253,17 +261,47 @@ def validate_xray(config: dict[str, Any] = Body(...), _: str = Depends(require_u
     return {"ok": True, "message": manager.validate_xray(config)}
 
 
+@app.get("/api/xray/link")
+def get_xray_link(_: str = Depends(require_user)):
+    return {"config": read_xray_link_config()}
+
+
+@app.put("/api/xray/link")
+def put_xray_link(config: dict[str, Any] = Body(...), _: str = Depends(require_user)):
+    normalized = normalize_xray_link_config(config)
+    manager.validate_xray(read_json(XRAY_CONFIG), link_config=normalized)
+    atomic_write_json(XRAY_LINK_CONFIG, normalized)
+    manager.notify_xray_link_config_changed()
+    return {"ok": True, "config": normalized}
+
+
+@app.post("/api/xray/link/validate")
+def validate_xray_link(body: XrayValidationBody, _: str = Depends(require_user)):
+    normalized = normalize_xray_link_config(body.link)
+    return {
+        "ok": True,
+        "message": manager.validate_xray(body.config, link_config=normalized),
+    }
+
+
+@app.put("/api/xray/settings")
+def put_xray_settings(body: XrayValidationBody, _: str = Depends(require_user)):
+    message = manager.save_xray_settings(body.config, body.link)
+    return {"ok": True, "message": message}
+
+
 @app.post("/api/xray/{action}")
 def xray_action(action: str, _: str = Depends(require_user)):
     if action == "start":
-        manager.start_xray()
+        message = manager.start_xray()
     elif action == "stop":
         manager.stop("xray")
+        message = "Xray 已停止"
     elif action == "restart":
-        manager.restart_xray()
+        message = manager.restart_xray()
     else:
         raise HTTPException(status_code=404, detail="未知操作")
-    return {"ok": True}
+    return {"ok": True, "message": message}
 
 
 @app.get("/api/vpn/config")

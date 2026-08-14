@@ -21,7 +21,7 @@
 - 三种路由模式：全部接管、使用 VPN 下发路由、手动 CIDR 网段。
 - 可切换容器默认、VPN 下发或手动指定的全局 DNS，支持内网域名解析。
 - Xray outbound 标签级分流，只为指定 outbound 注入 Linux `SO_MARK`。
-- VPN 断开时撤销策略路由并回落普通网络，不主动阻断代理流量。
+- VPN 断开时可停止 Xray、阻止指定域名，或保持原有回落普通网络的行为。
 - Web 登录保护、失败登录限流、安全响应头和 HttpOnly 会话 Cookie。
 - 服务器证书公钥指纹确认、配置持久化和最近 500 行内存日志。
 - `linux/amd64`、`linux/arm64`、`linux/arm/v7` 容器镜像。
@@ -206,6 +206,18 @@ XRAY_VPN_OUTBOUND_TAGS=vpn-out,corporate-out
 
 未选中的 outbound 保持原配置不变。原始 Xray JSON 不会因运行时注入而被改写。
 
+## Xray 与 VPN 断线联动
+
+“Xray 配置”页面提供三种断线处理方式：
+
+- **断开 Xray**：VPN 离线时停止 Xray，VPN 恢复后自动启动。下游连接会立即失败，适合触发 Mihomo 节点切换。
+- **阻止特定网址**：Xray 保持在线，但在 VPN 离线时把指定域名优先路由到临时 `blackhole` outbound；VPN 恢复后自动移除。可将 Mihomo 的健康检查地址加入列表，使该节点检查失败并 fallback。
+- **保持不变**：默认行为。VPN 离线时撤销策略路由，Xray 出站可回落普通网络。
+
+阻止列表每行填写一个域名或 HTTP(S) 地址，网址的路径与查询参数会被忽略。`example.com` 仅精确匹配该主机；`*.example.com` 匹配该域名及其子域名。该功能依赖代理请求携带域名，直接以 IP 为目标的请求不会按域名匹配，因此配置不接受 IP 地址。
+
+联动设置保存在 `/data/xray/link.json`。运行时生成的黑洞 outbound 和路由规则只写入 `/run/proxy2openconnect/xray-effective.json`，不会修改原始 `/data/xray/config.json`。
+
 ## 验证代理和路由
 
 ```bash
@@ -268,7 +280,9 @@ TRUSTED_ORIGINS=https://vpn.example.com
 ```text
 data/
 ├── vpn/config.json
-└── xray/config.json
+└── xray/
+    ├── config.json
+    └── link.json
 ```
 
 常用命令：
@@ -288,7 +302,7 @@ Web 页面中的 OpenConnect/Xray 实时日志只保存在内存中，不会写�
 - 容器只申请 `/dev/net/tun` 和 `NET_ADMIN`，不需要 `privileged`。
 - VPN 密码通过标准输入传给 OpenConnect，不出现在进程参数中。
 - 证书和私钥路径只允许位于 `/data/`。
-- VPN 断开后流量会回落普通网络；本项目默认不是 fail-closed 防泄漏边界。
+- “保持不变”模式下，VPN 断开后流量会回落普通网络；即使启用联动，本项目也不能替代宿主机级 fail-closed 防火墙边界。
 - 本项目无法替代组织的设备合规、访问控制和审计策略。
 
 完整安全策略与漏洞报告方式见 [SECURITY.md](SECURITY.md)。

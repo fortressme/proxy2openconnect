@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 XRAY_CONFIG = DATA_DIR / "xray" / "config.json"
+XRAY_LINK_CONFIG = DATA_DIR / "xray" / "link.json"
 VPN_CONFIG = DATA_DIR / "vpn" / "config.json"
 RUNTIME_CONFIG = Path("/run/proxy2openconnect/xray-effective.json")
 VPN_CONNECTED = Path("/run/proxy2openconnect/vpn.connected")
@@ -43,7 +44,10 @@ OPENCONNECT_BINARY = os.getenv("OPENCONNECT_BINARY", "/usr/sbin/openconnect")
 VPN_SCRIPT = "/opt/proxy2openconnect/scripts/vpn-script.sh"
 VPN_ROUTE_MODES = frozenset({"all", "vpn", "manual"})
 VPN_DNS_MODES = frozenset({"system", "vpn", "manual"})
+XRAY_LINK_MODES = frozenset({"stop_xray", "block_sites", "unchanged"})
+XRAY_OFFLINE_BLOCK_TAG = "proxy2openconnect-vpn-offline-block"
 MAX_MANUAL_ROUTES = 4096
+MAX_XRAY_BLOCKED_SITES = 256
 DEFAULT_AUTO_RECONNECT_ATTEMPTS = 5
 MAX_AUTO_RECONNECT_ATTEMPTS = 100
 MAX_HISTORY_TARGETS = 1000
@@ -114,6 +118,7 @@ def effective_xray_config(
     config: dict[str, Any],
     mark: int = XRAY_MARK,
     outbound_tags: frozenset[str] | set[str] | None = None,
+    blocked_sites: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     result = copy.deepcopy(config)
     outbounds = result.get("outbounds")
@@ -133,6 +138,41 @@ def effective_xray_config(
         if not isinstance(sockopt, dict):
             raise ConfigError(f"outbounds[{index}].streamSettings.sockopt 必须是对象")
         sockopt["mark"] = mark
+
+    if blocked_sites:
+        if any(
+            isinstance(outbound, dict)
+            and outbound.get("tag") == XRAY_OFFLINE_BLOCK_TAG
+            for outbound in outbounds
+        ):
+            raise ConfigError(
+                f"outbound 标签 {XRAY_OFFLINE_BLOCK_TAG} 由 VPN 联动功能保留，请更换标签"
+            )
+        routing = result.setdefault("routing", {})
+        if not isinstance(routing, dict):
+            raise ConfigError("routing 必须是对象")
+        rules = routing.setdefault("rules", [])
+        if not isinstance(rules, list):
+            raise ConfigError("routing.rules 必须是数组")
+        domain_rules = [
+            f"domain:{site[2:]}" if site.startswith("*.") else f"full:{site}"
+            for site in blocked_sites
+        ]
+        outbounds.append(
+            {
+                "protocol": "blackhole",
+                "settings": {"response": {"type": "none"}},
+                "tag": XRAY_OFFLINE_BLOCK_TAG,
+            }
+        )
+        rules.insert(
+            0,
+            {
+                "type": "field",
+                "domain": domain_rules,
+                "outboundTag": XRAY_OFFLINE_BLOCK_TAG,
+            },
+        )
     return result
 
 
@@ -155,6 +195,69 @@ def xray_uses_default_password(config: dict[str, Any]) -> bool:
         return False
 
     return contains_placeholder(config.get("inbounds", []))
+
+
+def _normalize_blocked_site(value: Any) -> str:
+    candidate = str(value).strip()
+    if not candidate or any(character.isspace() for character in candidate):
+        raise ConfigError("阻止网址必须是有效的域名或 HTTP(S) 地址")
+    wildcard = candidate.startswith("*.")
+    if wildcard:
+        candidate = candidate[2:]
+    parsed = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConfigError("阻止网址必须是有效的域名或 HTTP(S) 地址")
+    if parsed.username or parsed.password:
+        raise ConfigError("请勿在阻止网址中包含用户名或密码")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ConfigError("阻止网址端口无效") from exc
+    try:
+        host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError as exc:
+        raise ConfigError("阻止网址包含无效的域名") from exc
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise ConfigError("阻止网址必须使用域名，不能使用 IP 地址")
+    if not host or len(host) > 253:
+        raise ConfigError("阻止网址必须包含有效域名，例如 example.com")
+    if any(
+        not label
+        or len(label) > 63
+        or not re.fullmatch(r"[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?", label)
+        for label in host.split(".")
+    ):
+        raise ConfigError(f"阻止网址包含无效的域名: {host}")
+    return f"*.{host}" if wildcard else host
+
+
+def normalize_xray_link_config(config: dict[str, Any]) -> dict[str, Any]:
+    mode = str(config.get("mode", "unchanged")).strip().lower()
+    if mode not in XRAY_LINK_MODES:
+        raise ConfigError("Xray 联动模式必须是 stop_xray、block_sites 或 unchanged")
+    raw_sites = config.get("blocked_sites", [])
+    if isinstance(raw_sites, str):
+        raw_sites = raw_sites.replace(",", "\n").splitlines()
+    if not isinstance(raw_sites, list):
+        raise ConfigError("阻止网址必须是数组")
+    blocked_sites = list(
+        dict.fromkeys(_normalize_blocked_site(site) for site in raw_sites if str(site).strip())
+    )
+    if len(blocked_sites) > MAX_XRAY_BLOCKED_SITES:
+        raise ConfigError(f"最多允许配置 {MAX_XRAY_BLOCKED_SITES} 个阻止网址")
+    if mode == "block_sites" and not blocked_sites:
+        raise ConfigError("阻止特定网址模式至少需要填写一个域名")
+    return {"mode": mode, "blocked_sites": blocked_sites}
+
+
+def read_xray_link_config() -> dict[str, Any]:
+    if not XRAY_LINK_CONFIG.exists():
+        return {"mode": "unchanged", "blocked_sites": []}
+    return normalize_xray_link_config(read_json(XRAY_LINK_CONFIG))
 
 
 def validate_server(server: str) -> str:
@@ -1181,8 +1284,13 @@ class ProcessManager:
         self._last_keepalive_at: float | None = None
         self._last_keepalive_ok: bool | None = None
         self._last_keepalive_error: str | None = None
+        self._xray_desired = False
+        self._xray_link_signature: tuple[Any, ...] | None = None
+        self._xray_link_wakeup = threading.Event()
+        self._xray_action_lock = threading.RLock()
         threading.Thread(target=self._keepalive_loop, daemon=True).start()
         threading.Thread(target=self._statistics_loop, daemon=True).start()
+        threading.Thread(target=self._xray_link_loop, daemon=True).start()
 
     def _append(self, service: ServiceProcess, line: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -1204,6 +1312,7 @@ class ProcessManager:
                     self._vpn_otp = ""
                     self._vpn_reconnect_attempts = 0
                     self._next_vpn_retry_at = None
+                    self._xray_link_wakeup.set()
         code = process.wait()
         with self.lock:
             is_current = service.process is process
@@ -1218,6 +1327,7 @@ class ProcessManager:
                         self._vpn_reconnect_attempts = 0
                     self.ensure_direct_fallback()
                     self._keepalive_wakeup.set()
+                    self._xray_link_wakeup.set()
                     self._schedule_vpn_reconnect()
 
     def _read_xray_access_file(
@@ -1411,6 +1521,83 @@ class ProcessManager:
         self._keepalive_wakeup.set()
         self._statistics_wakeup.set()
 
+    def notify_xray_link_config_changed(self) -> None:
+        self._xray_link_wakeup.set()
+
+    def _vpn_is_connected(self) -> bool:
+        return self.services["vpn"].running and VPN_CONNECTED.exists()
+
+    @staticmethod
+    def _link_signature(config: dict[str, Any], connected: bool) -> tuple[Any, ...]:
+        mode = config["mode"]
+        if mode == "unchanged":
+            return (mode,)
+        if mode == "stop_xray":
+            return (mode, connected)
+        return (mode, True) if connected else (mode, False, *config["blocked_sites"])
+
+    def _effective_xray_config(
+        self,
+        config: dict[str, Any],
+        link_config: dict[str, Any] | None = None,
+        connected: bool | None = None,
+    ) -> dict[str, Any]:
+        link = read_xray_link_config() if link_config is None else link_config
+        is_connected = self._vpn_is_connected() if connected is None else connected
+        blocked_sites = (
+            link["blocked_sites"]
+            if link["mode"] == "block_sites" and not is_connected
+            else []
+        )
+        return effective_xray_config(config, blocked_sites=blocked_sites)
+
+    def _reconcile_xray_link(self) -> None:
+        signature: tuple[Any, ...] | None = None
+        try:
+            with self._xray_action_lock:
+                link = read_xray_link_config()
+                with self.lock:
+                    connected = self._vpn_is_connected()
+                    signature = self._link_signature(link, connected)
+                    previous = self._xray_link_signature
+                    desired = self._xray_desired
+                    running = self.services["xray"].running
+                if signature != previous:
+                    if link["mode"] == "stop_xray" and not connected:
+                        if running:
+                            self._append(
+                                self.services["xray"],
+                                "VPN 已离线，按照联动设置停止 Xray",
+                            )
+                            self.stop("xray", preserve_xray_desired=True)
+                    elif desired and not running:
+                        self._append(
+                            self.services["xray"],
+                            "VPN 状态或联动设置已更新，正在启动 Xray",
+                        )
+                        self.start_xray()
+                    elif desired and running and (
+                        link["mode"] == "block_sites"
+                        or (previous and previous[0] == "block_sites")
+                    ):
+                        state = "移除离线网址阻止规则" if connected else "启用离线网址阻止规则"
+                        self._append(self.services["xray"], f"VPN 状态变化，正在{state}")
+                        self.restart_xray()
+                    with self.lock:
+                        self._xray_link_signature = signature
+        except Exception as exc:
+            error_signature = ("error", str(exc))
+            with self.lock:
+                if self._xray_link_signature != error_signature:
+                    self._append(self.services["xray"], f"VPN 联动更新失败: {exc}")
+                self._xray_link_signature = error_signature
+
+    def _xray_link_loop(self) -> None:
+        while True:
+            self._reconcile_xray_link()
+            self._xray_link_wakeup.wait(0.25)
+            self._xray_link_wakeup.clear()
+
     def _statistics_loop(self) -> None:
         next_flush_at = time.monotonic() + 10
         while True:
@@ -1565,18 +1752,37 @@ class ProcessManager:
                     self._append(self.services["vpn"], f"网址保活失败: {exc}")
             next_request_at = time.monotonic() + interval
 
-    def start_xray(self) -> None:
+    def start_xray(self) -> str:
+        with self._xray_action_lock:
+            return self._start_xray()
+
+    def _start_xray(self) -> str:
         with self.lock:
+            self._xray_desired = True
             config = read_json(XRAY_CONFIG)
             validate_xray_shape(config)
-            effective = effective_xray_config(config)
+            link = read_xray_link_config()
+            connected = self._vpn_is_connected()
+            signature = self._link_signature(link, connected)
+            if link["mode"] == "stop_xray" and not connected:
+                if self.services["xray"].running:
+                    self._xray_link_signature = None
+                    self._xray_link_wakeup.set()
+                else:
+                    self._xray_link_signature = signature
+                self._append(
+                    self.services["xray"],
+                    "VPN 当前离线，Xray 已按联动设置保持停止；VPN 恢复后将自动启动",
+                )
+                return "VPN 当前离线，Xray 将在 VPN 恢复后自动启动"
+            effective = self._effective_xray_config(config, link, connected)
             access_log = _xray_access_log_path(effective)
             try:
                 access_position = access_log.stat().st_size if access_log else 0
             except OSError:
                 access_position = 0
             atomic_write_json(RUNTIME_CONFIG, effective)
-            self.validate_xray(effective)
+            self._validate_effective_xray(effective)
             self._pending_xray_targets.clear()
             self._socket_target_names.clear()
             self._pending_history_connections.clear()
@@ -1585,21 +1791,25 @@ class ProcessManager:
             process = self._spawn(
                 "xray", [XRAY_BINARY, "run", "-config", str(RUNTIME_CONFIG)]
             )
+            self._xray_link_signature = signature
             if access_log:
                 threading.Thread(
                     target=self._read_xray_access_file,
                     args=(access_log, process, access_position),
                     daemon=True,
                 ).start()
+            if link["mode"] == "block_sites" and not connected:
+                return "Xray 已启动，VPN 离线网址阻止规则已启用"
+            return "Xray 已启动"
 
-    def validate_xray(self, config: dict[str, Any]) -> str:
-        validate_xray_shape(config)
+    def _validate_effective_xray(self, effective: dict[str, Any]) -> str:
+        validate_xray_shape(effective)
         if not Path(XRAY_BINARY).exists():
             return "结构检查通过（当前环境未安装 Xray，跳过核心检查）"
         fd, name = tempfile.mkstemp(suffix=".json", prefix="xray-check-")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(effective_xray_config(config), handle, ensure_ascii=False)
+                json.dump(effective, handle, ensure_ascii=False)
             result = subprocess.run(
                 [XRAY_BINARY, "run", "-test", "-config", name],
                 capture_output=True,
@@ -1613,9 +1823,43 @@ class ProcessManager:
         finally:
             os.unlink(name)
 
-    def stop(self, name: str) -> None:
+    def validate_xray(
+        self,
+        config: dict[str, Any],
+        link_config: dict[str, Any] | None = None,
+    ) -> str:
+        validate_xray_shape(config)
+        link = read_xray_link_config() if link_config is None else link_config
+        connected = False if link["mode"] == "block_sites" else self._vpn_is_connected()
+        return self._validate_effective_xray(
+            self._effective_xray_config(config, link_config=link, connected=connected)
+        )
+
+    def save_xray_settings(
+        self,
+        config: dict[str, Any],
+        link_config: dict[str, Any],
+    ) -> str:
+        normalized_link = normalize_xray_link_config(link_config)
+        with self._xray_action_lock:
+            self.validate_xray(config, link_config=normalized_link)
+            atomic_write_json(XRAY_CONFIG, config)
+            atomic_write_json(XRAY_LINK_CONFIG, normalized_link)
+            self._xray_link_signature = None
+            return self.restart_xray()
+
+    def stop(self, name: str, preserve_xray_desired: bool = False) -> None:
+        if name == "xray":
+            with self._xray_action_lock:
+                self._stop(name, preserve_xray_desired)
+            return
+        self._stop(name, preserve_xray_desired)
+
+    def _stop(self, name: str, preserve_xray_desired: bool = False) -> None:
         with self.lock:
             service = self.services[name]
+            if name == "xray" and not preserve_xray_desired:
+                self._xray_desired = False
             if name == "vpn":
                 self._vpn_requested = False
                 self._vpn_password = ""
@@ -1645,9 +1889,10 @@ class ProcessManager:
             if name == "vpn" and service.process is process:
                 self.ensure_direct_fallback()
 
-    def restart_xray(self) -> None:
-        self.stop("xray")
-        self.start_xray()
+    def restart_xray(self) -> str:
+        with self._xray_action_lock:
+            self._stop("xray", preserve_xray_desired=True)
+            return self._start_xray()
 
     def ensure_direct_fallback(self) -> None:
         script = "/opt/proxy2openconnect/scripts/route-guard.sh"

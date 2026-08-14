@@ -502,8 +502,17 @@ async function loadVpnConfig() {
 }
 
 async function loadXrayConfig() {
-  const result = await api("/api/xray/config");
+  const [result, linkResult] = await Promise.all([
+    api("/api/xray/config"),
+    api("/api/xray/link"),
+  ]);
   $("#xray-editor").value = JSON.stringify(result.config, null, 2);
+  const link = linkResult.config || {};
+  const mode = ["stop_xray", "block_sites", "unchanged"].includes(link.mode) ? link.mode : "unchanged";
+  const option = $(`input[name="xray_link_mode"][value="${mode}"]`);
+  if (option) option.checked = true;
+  $("#xray-blocked-sites").value = (link.blocked_sites || []).join("\n");
+  updateXrayLinkFields();
   updateLineNumbers();
 }
 
@@ -592,6 +601,26 @@ function parseEditor() {
   }
 }
 
+function xrayLinkConfigFromForm() {
+  const selected = $(`input[name="xray_link_mode"]:checked`);
+  const mode = selected?.value || "unchanged";
+  return {
+    mode,
+    blocked_sites: mode === "block_sites"
+      ? $("#xray-blocked-sites").value
+        .replaceAll(",", "\n")
+        .split("\n")
+        .map(value => value.trim())
+        .filter(Boolean)
+      : [],
+  };
+}
+
+function updateXrayLinkFields() {
+  const mode = $(`input[name="xray_link_mode"]:checked`)?.value || "unchanged";
+  $("#xray-blocked-sites-field").classList.toggle("hidden", mode !== "block_sites");
+}
+
 function updateLineNumbers() {
   const editor = $("#xray-editor");
   const count = editor.value.split("\n").length;
@@ -674,7 +703,7 @@ $("#vpn-connect").addEventListener("click", async () => {
 });
 
 $("#vpn-disconnect").addEventListener("click", async () => {
-  try { await api("/api/vpn/disconnect", {method:"POST"}); toast("VPN 已断开，Xray 出站已回落普通网络"); refreshStatus(); }
+  try { await api("/api/vpn/disconnect", {method:"POST"}); toast("VPN 已断开，正在应用 Xray 联动设置"); refreshStatus(); }
   catch (error) { toast(error.message, "error"); }
 });
 
@@ -692,24 +721,28 @@ $("#trust-certificate").addEventListener("click", async () => {
 
 $("#overview-xray-action").addEventListener("click", async () => {
   const action = latestStatus?.services?.xray?.running ? "stop" : "start";
-  try { await api(`/api/xray/${action}`, {method:"POST"}); toast(`Xray 已${action === "start" ? "启动" : "停止"}`); refreshStatus(); }
+  try { const result = await api(`/api/xray/${action}`, {method:"POST"}); toast(result.message || `Xray 已${action === "start" ? "启动" : "停止"}`); refreshStatus(); }
   catch (error) { toast(error.message, "error"); }
 });
 
 $("#xray-validate").addEventListener("click", async () => {
-  try { const result = await api("/api/xray/validate", {method:"POST",body:parseEditor()}); toast(result.message); }
+  try {
+    const result = await api("/api/xray/link/validate", {method:"POST", body:{config:parseEditor(), link:xrayLinkConfigFromForm()}});
+    toast(result.message);
+  }
   catch (error) { toast(error.message, "error"); }
 });
 
 $("#xray-save").addEventListener("click", async () => {
   try {
     const config = parseEditor();
-    const result = await api("/api/xray/config", {method:"PUT",body:config});
-    await api("/api/xray/restart", {method:"POST"});
-    toast(result.message || "Xray 配置已保存并重启"); refreshStatus();
+    const link = xrayLinkConfigFromForm();
+    const result = await api("/api/xray/settings", {method:"PUT", body:{config, link}});
+    toast(result.message || "Xray 配置与联动设置已保存"); refreshStatus();
   } catch (error) { toast(error.message, "error"); }
 });
 
+$$(`input[name="xray_link_mode"]`).forEach(input => input.addEventListener("change", updateXrayLinkFields));
 $("#xray-editor").addEventListener("input", updateLineNumbers);
 $("#xray-editor").addEventListener("scroll", event => { $("#line-numbers").scrollTop = event.target.scrollTop; });
 $("#xray-editor").addEventListener("keydown", event => {
